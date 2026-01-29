@@ -1,5 +1,14 @@
 const mongoose = require("mongoose");
 
+const BOOKING_STATUS = {
+  INITIATED: "INITIATED",
+  PAYMENT_PENDING: "PAYMENT_PENDING",
+  CONFIRMED: "CONFIRMED",
+  CANCELLED: "CANCELLED",
+  EXPIRED: "EXPIRED",
+  FAILED: "FAILED",
+};
+
 const bookingSchema = new mongoose.Schema(
   {
     user: {
@@ -14,24 +23,37 @@ const bookingSchema = new mongoose.Schema(
       required: true,
     },
 
-    seats: {
-      type: Number,
-      required: true,
-      min: 1,
+    idempotencyKey: {
+      type: String,
+      unique: true,
+      sparse: true,
     },
 
-    totalPrice: {
-      type: Number,
+    seats: {
+      type: [String],
       required: true,
     },
 
     status: {
       type: String,
-      enum: ["booked", "cancelled"],
-      default: "booked",
+      enum: Object.values(BOOKING_STATUS),
+      default: BOOKING_STATUS.INITIATED,
+    },
+
+    seatLockId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "SeatLock",
+      unique: true,
+    },
+
+    paymentExpiresAt: {
+      type: Date,
+      required: false,
     },
   },
-  { timestamps: true },
+  {
+    timestamps: true,
+  },
 );
 
 module.exports = mongoose.model("Booking", bookingSchema);
