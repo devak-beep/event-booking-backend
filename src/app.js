@@ -5,6 +5,8 @@
 
 // Import Express framework
 const express = require("express");
+// Import CORS to allow frontend to talk to backend
+const cors = require("cors");
 // Import middleware for automatic error handling in async functions
 // Without this, errors in async functions would crash the server
 require("express-async-errors");
@@ -21,6 +23,9 @@ const bookingRoutes = require("./routes/booking.routes"); // Booking confirmatio
 
 // Create Express app instance
 const app = express();
+
+// MIDDLEWARE: Enable CORS (allows frontend to talk to backend)
+app.use(cors());
 
 // MIDDLEWARE: Correlation ID for request tracking
 app.use(correlationMiddleware);
