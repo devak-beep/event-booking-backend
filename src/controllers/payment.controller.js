@@ -8,6 +8,105 @@ const {
 } = require("../utils/bookingStateMachine");
 const mongoose = require("mongoose");
 
+// Process payment for a booking
+exports.processPayment = async (req, res) => {
+  const { bookingId } = req.params;
+  const { status, idempotencyKey } = req.body;
+
+  if (!status || !idempotencyKey) {
+    return res.status(400).json({
+      success: false,
+      message: "status and idempotencyKey are required",
+    });
+  }
+
+  if (!["SUCCESS", "FAILURE", "TIMEOUT"].includes(status)) {
+    return res.status(400).json({
+      success: false,
+      message: "status must be SUCCESS, FAILURE, or TIMEOUT",
+    });
+  }
+
+  try {
+    // Check for idempotency
+    const existingAttempt = await PaymentAttempt.findOne({ idempotencyKey });
+    if (existingAttempt) {
+      return res.status(200).json({
+        success: true,
+        message: "Payment already processed (idempotent)",
+      });
+    }
+
+    // Find booking
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: "Booking not found",
+      });
+    }
+
+    // Record payment attempt
+    await PaymentAttempt.create({
+      bookingId,
+      idempotencyKey,
+      forceResult: status.toLowerCase(), // Convert SUCCESS to success
+      status: status === "SUCCESS" ? "SUCCESS" : status === "FAILURE" ? "FAILED" : "TIMEOUT",
+      amount: booking.seats * 100, // Dummy amount
+    });
+
+    // Update booking based on payment status
+    if (status === "SUCCESS") {
+      booking.status = "CONFIRMED";
+      await booking.save();
+      
+      return res.status(200).json({
+        success: true,
+        message: "Payment successful, booking confirmed",
+      });
+    } else if (status === "FAILURE") {
+      // Only restore seats if booking was PAYMENT_PENDING
+      if (booking.status === "PAYMENT_PENDING") {
+        booking.status = "FAILED";
+        await booking.save();
+        
+        // Restore seats
+        await Event.findByIdAndUpdate(booking.event, {
+          $inc: { availableSeats: booking.seats.length || 1 },
+        });
+        
+        return res.status(200).json({
+          success: true,
+          message: "Payment failed, seats restored",
+        });
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: "Booking is not in PAYMENT_PENDING status",
+        });
+      }
+    } else if (status === "TIMEOUT") {
+      // TIMEOUT - keep as PAYMENT_PENDING, let expiry job handle it
+      return res.status(200).json({
+        success: true,
+        message: "Payment timeout recorded, booking will expire automatically",
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid payment status",
+      });
+    }
+  } catch (error) {
+    console.error("Payment processing error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Payment processing failed",
+      error: error.message,
+    });
+  }
+};
+
 // ========== TASK 5.1: Payment Intent API with Idempotency ==========
 exports.createPaymentIntent = async (req, res) => {
   const { bookingId, amount, force, idempotencyKey } = req.body;
