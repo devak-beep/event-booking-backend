@@ -1,0 +1,30 @@
+{
+  "name": "digifulx-assettrack-backend",
+  "version": "2.0.0",
+  "description": "Digifulx AssetTrack - IT Asset Management Backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "keywords": [
+    "asset-management",
+    "digifulx",
+    "inventory"
+  ],
+  "author": "Digifulx",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^9.2.2",
+    "morgan": "^1.10.1",
+    "multer": "^2.0.2",
+    "node-cron": "^4.2.1",
+    "uuid": "^13.0.0"
+  }
+}
