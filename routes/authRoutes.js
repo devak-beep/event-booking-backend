@@ -7,5 +7,7 @@ const router = express.Router();
 router.post('/register', authController.register.bind(authController));
 router.post('/login', authController.login.bind(authController));
 router.get('/profile', authenticate, authController.getProfile.bind(authController));
+router.post('/change-password', authenticate, authController.changePassword.bind(authController));
+router.post('/change-email', authenticate, authController.changeEmail.bind(authController));
 
 module.exports = router;

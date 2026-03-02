@@ -46,6 +46,45 @@ class AuthService {
       token
     };
   }
+
+  async changePassword(userId, currentPassword, newPassword) {
+    const user = await userRepository.findById(userId);
+    if (!user) {
+      throw new AppError('User not found', 404);
+    }
+
+    const isPasswordValid = await user.comparePassword(currentPassword);
+    if (!isPasswordValid) {
+      throw new AppError('Current password is incorrect', 401);
+    }
+
+    user.password = newPassword;
+    await user.save();
+
+    return { message: 'Password changed successfully' };
+  }
+
+  async changeEmail(userId, newEmail, password) {
+    const user = await userRepository.findById(userId);
+    if (!user) {
+      throw new AppError('User not found', 404);
+    }
+
+    const isPasswordValid = await user.comparePassword(password);
+    if (!isPasswordValid) {
+      throw new AppError('Password is incorrect', 401);
+    }
+
+    const existingUser = await userRepository.findByEmail(newEmail);
+    if (existingUser) {
+      throw new AppError('Email already in use', 400);
+    }
+
+    user.email = newEmail;
+    await user.save();
+
+    return { message: 'Email changed successfully' };
+  }
 }
 
 module.exports = new AuthService();
