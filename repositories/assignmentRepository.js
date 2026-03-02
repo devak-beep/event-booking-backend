@@ -6,7 +6,8 @@ class AssignmentRepository {
   }
 
   async findActiveByAsset(assetId) {
-    return await Assignment.findOne({ assetId, status: 'active' });
+    return await Assignment.findOne({ assetId, status: 'active' })
+      .populate('userId', 'name email');
   }
 
   async findById(id) {
