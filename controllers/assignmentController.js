@@ -58,6 +58,16 @@ class AssignmentController {
       next(error);
     }
   }
+
+  async getAssignmentByAsset(req, res, next) {
+    try {
+      const { assetId } = req.params;
+      const assignment = await assignmentService.getAssignmentByAsset(assetId);
+      res.status(200).json({ success: true, data: assignment });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 module.exports = new AssignmentController();

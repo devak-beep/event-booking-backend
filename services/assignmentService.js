@@ -78,6 +78,14 @@ class AssignmentService {
   async getAssetHistory(assetId, options) {
     return await assignmentRepository.findByAsset(assetId, options);
   }
+
+  async getAssignmentByAsset(assetId) {
+    const assignment = await assignmentRepository.findActiveByAsset(assetId);
+    if (assignment) {
+      await assignment.populate('userId', 'name email');
+    }
+    return assignment;
+  }
 }
 
 module.exports = new AssignmentService();
