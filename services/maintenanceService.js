@@ -10,12 +10,11 @@ class MaintenanceService {
       throw new AppError('Asset not found', 404);
     }
 
-    const maintenance = await maintenanceRepository.create(maintenanceData);
-    return await maintenanceRepository.findById(maintenance._id);
+    return await maintenanceRepository.create(maintenanceData);
   }
 
-  async getAllMaintenance(filters) {
-    return await maintenanceRepository.findAll(filters);
+  async getAllMaintenance(filters, options) {
+    return await maintenanceRepository.findAll(filters, options);
   }
 
   async updateMaintenance(id, updateData) {

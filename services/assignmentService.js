@@ -42,11 +42,17 @@ class AssignmentService {
     return assignments;
   }
 
-  async getAllAssignments(filters) {
-    return await Assignment.find(filters)
-      .populate('assetId', 'assetId name brand model serialNumber category')
+  async getAllAssignments(filters, options) {
+    const { page = 1, limit = 10 } = options || {};
+    const skip = (page - 1) * limit;
+    const total = await Assignment.countDocuments(filters);
+    const data = await Assignment.find(filters)
+      .populate('assetId', 'assetId name brand model serialNumber category status')
       .populate('userId', 'name email')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+    return { data, total, page, pages: Math.ceil(total / limit) };
   }
 
   async returnAsset(assignmentId) {
@@ -69,8 +75,8 @@ class AssignmentService {
     return await assignmentRepository.findById(assignmentId);
   }
 
-  async getAssetHistory(assetId) {
-    return await assignmentRepository.findByAsset(assetId);
+  async getAssetHistory(assetId, options) {
+    return await assignmentRepository.findByAsset(assetId, options);
   }
 }
 

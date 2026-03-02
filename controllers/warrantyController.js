@@ -21,7 +21,8 @@ class WarrantyController {
 
   async getAllWarranties(req, res, next) {
     try {
-      const warranties = await warrantyService.getAllWarranties();
+      const { page, limit } = req.query;
+      const warranties = await warrantyService.getAllWarranties({ page: parseInt(page) || 1, limit: parseInt(limit) || 10 });
       res.status(200).json({ success: true, data: warranties });
     } catch (error) {
       next(error);

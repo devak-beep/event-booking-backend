@@ -78,8 +78,8 @@ class UserService {
     return { user, assignments: [] };
   }
 
-  async getAllUsers(filters) {
-    return await userRepository.findAll(filters);
+  async getAllUsers(filters, options) {
+    return await userRepository.findAll(filters, options);
   }
 
   async getUserById(id) {

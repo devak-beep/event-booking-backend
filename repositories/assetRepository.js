@@ -1,8 +1,16 @@
 const MasterData = require('../models/MasterData');
+const Asset = require('../models/Asset');
 
 class AssetRepository {
   async create(assetData) {
-    return await MasterData.create(assetData);
+    // Save to MasterData first (primary storage for frontend)
+    const masterData = await MasterData.create(assetData);
+    
+    // Save to Asset collection with SAME _id (for relationships)
+    const assetCopy = { ...masterData.toObject() };
+    await Asset.create(assetCopy);
+    
+    return masterData;
   }
 
   async findById(id) {
@@ -36,10 +44,15 @@ class AssetRepository {
   }
 
   async update(id, updateData) {
-    return await MasterData.findByIdAndUpdate(id, updateData, { new: true });
+    // Update both collections
+    const masterData = await MasterData.findByIdAndUpdate(id, updateData, { new: true });
+    await Asset.findByIdAndUpdate(id, updateData, { new: true });
+    return masterData;
   }
 
   async delete(id) {
+    // Delete from both collections
+    await Asset.findByIdAndDelete(id);
     return await MasterData.findByIdAndDelete(id);
   }
 }

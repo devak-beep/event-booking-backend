@@ -26,12 +26,12 @@ class AssignmentController {
 
   async getAllAssignments(req, res, next) {
     try {
-      const { status, userId } = req.query;
+      const { status, userId, page, limit } = req.query;
       const filters = {};
       if (status) filters.status = status;
       if (userId) filters.userId = userId;
       
-      const assignments = await assignmentService.getAllAssignments(filters);
+      const assignments = await assignmentService.getAllAssignments(filters, { page: parseInt(page) || 1, limit: parseInt(limit) || 10 });
       res.status(200).json({ success: true, data: assignments });
     } catch (error) {
       next(error);
@@ -51,7 +51,8 @@ class AssignmentController {
   async getAssetHistory(req, res, next) {
     try {
       const { assetId } = req.params;
-      const history = await assignmentService.getAssetHistory(assetId);
+      const { page, limit } = req.query;
+      const history = await assignmentService.getAssetHistory(assetId, { page: parseInt(page) || 1, limit: parseInt(limit) || 10 });
       res.status(200).json({ success: true, data: history });
     } catch (error) {
       next(error);

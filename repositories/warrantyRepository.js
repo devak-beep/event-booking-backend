@@ -13,8 +13,12 @@ class WarrantyRepository {
     return await Warranty.findOne({ assetId }).populate('assetId');
   }
 
-  async findAll() {
-    return await Warranty.find().populate('assetId');
+  async findAll(options = {}) {
+    const { page = 1, limit = 10 } = options;
+    const skip = (page - 1) * limit;
+    const total = await Warranty.countDocuments();
+    const data = await Warranty.find().populate('assetId').skip(skip).limit(limit);
+    return { data, total, page, pages: Math.ceil(total / limit) };
   }
 
   async update(id, updateData) {

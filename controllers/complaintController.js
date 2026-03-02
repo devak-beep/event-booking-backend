@@ -13,12 +13,12 @@ class ComplaintController {
 
   async getAllComplaints(req, res, next) {
     try {
-      const { status, priority } = req.query;
+      const { status, priority, page, limit } = req.query;
       const filters = {};
       if (status) filters.status = status;
       if (priority) filters.priority = priority;
 
-      const complaints = await complaintService.getAllComplaints(filters);
+      const complaints = await complaintService.getAllComplaints(filters, { page: parseInt(page) || 1, limit: parseInt(limit) || 10 });
       res.status(200).json({ success: true, data: complaints });
     } catch (error) {
       next(error);

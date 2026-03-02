@@ -31,11 +31,11 @@ class UserController {
 
   async getAllUsers(req, res, next) {
     try {
-      const { role } = req.query;
+      const { role, page, limit } = req.query;
       const filters = {};
       if (role) filters.role = role;
 
-      const users = await userService.getAllUsers(filters);
+      const users = await userService.getAllUsers(filters, { page: parseInt(page) || 1, limit: parseInt(limit) || 10 });
       res.status(200).json({ success: true, data: users });
     } catch (error) {
       next(error);

@@ -4,6 +4,7 @@ class MaintenanceController {
   async createMaintenance(req, res, next) {
     try {
       const maintenance = await maintenanceService.createMaintenance(req.body);
+      console.log('Created maintenance:', JSON.stringify(maintenance, null, 2));
       res.status(201).json({ success: true, data: maintenance });
     } catch (error) {
       next(error);
@@ -12,12 +13,12 @@ class MaintenanceController {
 
   async getAllMaintenance(req, res, next) {
     try {
-      const { status, assetId } = req.query;
+      const { status, assetId, page, limit } = req.query;
       const filters = {};
       if (status) filters.status = status;
       if (assetId) filters.assetId = assetId;
 
-      const maintenance = await maintenanceService.getAllMaintenance(filters);
+      const maintenance = await maintenanceService.getAllMaintenance(filters, { page: parseInt(page) || 1, limit: parseInt(limit) || 10 });
       res.status(200).json({ success: true, data: maintenance });
     } catch (error) {
       next(error);

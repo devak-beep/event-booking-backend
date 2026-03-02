@@ -26,8 +26,8 @@ class WarrantyService {
     return warranty;
   }
 
-  async getAllWarranties() {
-    return await warrantyRepository.findAll();
+  async getAllWarranties(options) {
+    return await warrantyRepository.findAll(options);
   }
 
   async getExpiringWarranties(days = 30) {

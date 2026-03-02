@@ -55,8 +55,8 @@ class AlertService {
     return { generated: count };
   }
 
-  async getAllAlerts(filters) {
-    return await alertRepository.findAll(filters);
+  async getAllAlerts(filters, options) {
+    return await alertRepository.findAll(filters, options);
   }
 
   async updateAlert(id, updateData) {

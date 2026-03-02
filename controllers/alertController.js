@@ -3,12 +3,12 @@ const alertService = require('../services/alertService');
 class AlertController {
   async getAllAlerts(req, res, next) {
     try {
-      const { status, type } = req.query;
+      const { status, type, page, limit } = req.query;
       const filters = {};
       if (status) filters.status = status;
       if (type) filters.type = type;
 
-      const alerts = await alertService.getAllAlerts(filters);
+      const alerts = await alertService.getAllAlerts(filters, { page: parseInt(page) || 1, limit: parseInt(limit) || 10 });
       res.status(200).json({ success: true, data: alerts });
     } catch (error) {
       next(error);

@@ -78,6 +78,7 @@ class AssetController {
       };
 
       const result = await assetService.getAssets(filters, options);
+      console.log(`[API] Returning ${result.assets?.length || 0} assets to frontend`);
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       next(error);

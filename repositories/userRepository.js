@@ -13,8 +13,12 @@ class UserRepository {
     return await User.findById(id).select('-password');
   }
 
-  async findAll(filters = {}) {
-    return await User.find(filters).select('-password').sort({ createdAt: -1 });
+  async findAll(filters = {}, options = {}) {
+    const { page = 1, limit = 10 } = options;
+    const skip = (page - 1) * limit;
+    const total = await User.countDocuments(filters);
+    const data = await User.find(filters).select('-password').sort({ createdAt: -1 }).skip(skip).limit(limit);
+    return { data, total, page, pages: Math.ceil(total / limit) };
   }
 }
 

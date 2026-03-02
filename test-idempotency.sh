@@ -259,6 +259,81 @@ else
 fi
 echo ""
 
+# Test 6: Complaint Status Transitions (Idempotency)
+echo "📝 Test 6: Complaint Status Transitions (Idempotency)"
+
+# Get first available asset
+echo "Getting an asset..."
+ASSET_DATA=$(curl -s -X GET http://localhost:5000/assets \
+  -H "Authorization: Bearer $TOKEN")
+ASSET_ID=$(echo "$ASSET_DATA" | jq -r '.data.assets[0]._id // empty')
+
+if [ -z "$ASSET_ID" ]; then
+  echo "No assets found, creating one..."
+  ASSET_CREATE=$(curl -s -X POST http://localhost:5000/assets \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"name\": \"Test Asset for Complaint\",
+      \"serialNumber\": \"TEST-COMPLAINT-$(date +%s)\",
+      \"category\": \"Laptop\",
+      \"status\": \"available\"
+    }")
+  ASSET_ID=$(echo "$ASSET_CREATE" | jq -r '.data._id // empty')
+fi
+
+if [ -z "$ASSET_ID" ]; then
+  echo "⚠️  Could not get/create asset, skipping complaint test"
+else
+  echo "Using asset: $ASSET_ID"
+  
+  echo "Creating a complaint..."
+  COMPLAINT=$(curl -s -X POST http://localhost:5000/complaints \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"assetId\": \"$ASSET_ID\",
+      \"title\": \"Test Complaint\",
+      \"description\": \"Test issue\",
+      \"priority\": \"medium\"
+    }")
+
+  COMPLAINT_ID=$(echo "$COMPLAINT" | jq -r '.data._id')
+  echo "Complaint created: $COMPLAINT_ID"
+
+  echo "Transitioning to acknowledged..."
+  curl -s -X PATCH http://localhost:5000/complaints/$COMPLAINT_ID \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"status":"acknowledged"}' | jq '.success'
+
+  echo "Transitioning to in-progress..."
+  curl -s -X PATCH http://localhost:5000/complaints/$COMPLAINT_ID \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"status":"in-progress"}' | jq '.success'
+
+  echo "Completing complaint..."
+  curl -s -X PATCH http://localhost:5000/complaints/$COMPLAINT_ID \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"status":"completed"}' | jq '.success'
+
+  echo "Attempting to reopen completed complaint (should fail)..."
+  REOPEN=$(curl -s -X PATCH http://localhost:5000/complaints/$COMPLAINT_ID \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"status":"new"}')
+
+  SUCCESS_REOPEN=$(echo "$REOPEN" | jq -r '.success')
+  if [ "$SUCCESS_REOPEN" = "false" ]; then
+    echo "✅ Completed complaint cannot be reopened"
+  else
+    echo "❌ Completed complaint was reopened (should be prevented)"
+  fi
+fi
+echo ""
+
 echo "✅ Idempotency Tests Complete!"
 echo ""
 echo "📊 Summary:"
@@ -267,3 +342,4 @@ echo "- Asset assignment: Prevents duplicate assignments"
 echo "- Asset creation: Prevents duplicate serial numbers"
 echo "- Maintenance completion: Prevents double completion"
 echo "- Vendor creation: Allows duplicates (add unique constraint if needed)"
+echo "- Complaint status: Prevents reopening completed complaints"

@@ -136,7 +136,9 @@ class AssetService {
     }
     // admin sees all assets (no filter)
     
-    return await assetRepository.findAll(filters, options);
+    const result = await assetRepository.findAll(filters, options);
+    console.log('[Service] Fetched', result.assets?.length, 'assets from repository');
+    return result;
   }
 
   async getAssetById(id) {
