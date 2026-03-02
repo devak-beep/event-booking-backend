@@ -93,6 +93,18 @@ class UserService {
     }
     return user;
   }
+
+  async resetPassword(id, newPassword) {
+    const user = await User.findById(id);
+    if (!user) {
+      throw new AppError('User not found', 404);
+    }
+
+    user.password = newPassword;
+    await user.save();
+
+    return { message: 'Password reset successfully' };
+  }
 }
 
 module.exports = new UserService();

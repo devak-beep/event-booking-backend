@@ -11,6 +11,7 @@ router.get('/', authenticate, authorize('superadmin', 'admin', 'hr', 'manager'),
 router.get('/:id', authenticate, authorize('superadmin', 'admin', 'hr', 'manager'), userController.getUserById.bind(userController));
 router.put('/:id', authenticate, authorize('superadmin', 'admin'), logActivity('UPDATE', 'User'), userController.updateUser.bind(userController));
 router.patch('/:id', authenticate, authorize('superadmin', 'admin'), logActivity('UPDATE', 'User'), userController.updateUser.bind(userController));
+router.post('/:id/reset-password', authenticate, authorize('superadmin', 'admin'), logActivity('UPDATE', 'User'), userController.resetPassword.bind(userController));
 router.delete('/:id', authenticate, authorize('superadmin', 'admin'), logActivity('DELETE', 'User'), userController.deleteUser.bind(userController));
 
 module.exports = router;
