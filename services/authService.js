@@ -48,9 +48,17 @@ class AuthService {
   }
 
   async changePassword(userId, currentPassword, newPassword) {
-    const user = await userRepository.findById(userId);
+    const user = await userRepository.findByIdWithPassword(userId);
     if (!user) {
       throw new AppError('User not found', 404);
+    }
+
+    if (!user.password) {
+      throw new AppError('User password not set', 400);
+    }
+
+    if (!currentPassword) {
+      throw new AppError('Current password is required', 400);
     }
 
     const isPasswordValid = await user.comparePassword(currentPassword);
@@ -65,7 +73,7 @@ class AuthService {
   }
 
   async changeEmail(userId, newEmail, password) {
-    const user = await userRepository.findById(userId);
+    const user = await userRepository.findByIdWithPassword(userId);
     if (!user) {
       throw new AppError('User not found', 404);
     }

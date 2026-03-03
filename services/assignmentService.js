@@ -86,6 +86,15 @@ class AssignmentService {
     }
     return assignment;
   }
+
+  async updateAssignment(assignmentId, updates) {
+    const assignment = await assignmentRepository.findById(assignmentId);
+    if (!assignment) {
+      throw new AppError('Assignment not found', 404);
+    }
+    await assignmentRepository.update(assignmentId, updates);
+    return await assignmentRepository.findById(assignmentId);
+  }
 }
 
 module.exports = new AssignmentService();

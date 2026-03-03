@@ -40,7 +40,10 @@ class AssignmentController {
 
   async returnAsset(req, res, next) {
     try {
-      const { assignmentId } = req.body;
+      const assignmentId = req.params.id || req.body.assignmentId;
+      if (!assignmentId) {
+        return res.status(400).json({ success: false, message: 'Assignment ID is required' });
+      }
       const assignment = await assignmentService.returnAsset(assignmentId);
       res.status(200).json({ success: true, data: assignment });
     } catch (error) {
@@ -63,6 +66,17 @@ class AssignmentController {
     try {
       const { assetId } = req.params;
       const assignment = await assignmentService.getAssignmentByAsset(assetId);
+      res.status(200).json({ success: true, data: assignment });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async updateAssignment(req, res, next) {
+    try {
+      const { id } = req.params;
+      const { notes, status } = req.body;
+      const assignment = await assignmentService.updateAssignment(id, { notes, status });
       res.status(200).json({ success: true, data: assignment });
     } catch (error) {
       next(error);

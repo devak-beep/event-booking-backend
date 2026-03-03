@@ -33,7 +33,22 @@ class AuthController {
   async changePassword(req, res, next) {
     try {
       const { currentPassword, newPassword } = req.body;
-      const result = await authService.changePassword(req.user.id, currentPassword, newPassword);
+      
+      if (!currentPassword || !newPassword) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Current password and new password are required' 
+        });
+      }
+      
+      if (!req.user || !req.user._id) {
+        return res.status(401).json({ 
+          success: false, 
+          message: 'User not authenticated' 
+        });
+      }
+      
+      const result = await authService.changePassword(req.user._id, currentPassword, newPassword);
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       next(error);
@@ -43,7 +58,7 @@ class AuthController {
   async changeEmail(req, res, next) {
     try {
       const { newEmail, password } = req.body;
-      const result = await authService.changeEmail(req.user.id, newEmail, password);
+      const result = await authService.changeEmail(req.user._id, newEmail, password);
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       next(error);

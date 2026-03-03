@@ -13,6 +13,10 @@ class UserRepository {
     return await User.findById(id).select('-password');
   }
 
+  async findByIdWithPassword(id) {
+    return await User.findById(id);
+  }
+
   async findAll(filters = {}, options = {}) {
     const { page = 1, limit = 10 } = options;
     const skip = (page - 1) * limit;

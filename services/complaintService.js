@@ -29,7 +29,19 @@ class ComplaintService {
   async updateComplaint(id, data, userId, userRole) {
     const complaint = await this.getComplaintById(id);
     
-    if (userRole === 'user' && complaint.userId.toString() !== userId) {
+    const complaintUserId = complaint.userId?._id ? complaint.userId._id.toString() : complaint.userId.toString();
+    const requestUserId = userId.toString();
+    const normalizedRole = userRole.toLowerCase();
+    
+    console.log('Update Complaint Debug:', {
+      complaintUserId,
+      requestUserId,
+      userRole,
+      normalizedRole,
+      match: complaintUserId === requestUserId
+    });
+    
+    if (normalizedRole === 'user' && complaintUserId !== requestUserId) {
       throw new AppError('Access denied', 403);
     }
 
@@ -38,7 +50,16 @@ class ComplaintService {
       throw new AppError('Cannot modify completed complaint', 400);
     }
 
-    // Validate status transitions
+    // Users can only edit title, description, and priority when status is 'new'
+    if (normalizedRole === 'user') {
+      if (complaint.status !== 'new') {
+        throw new AppError('Can only edit complaints with new status', 400);
+      }
+      // Users cannot change status
+      delete data.status;
+    }
+
+    // Validate status transitions (only for admins)
     const validTransitions = {
       'new': ['acknowledged'],
       'acknowledged': ['in-progress'],
