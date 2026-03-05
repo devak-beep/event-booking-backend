@@ -5,18 +5,17 @@ const mongoose = require("mongoose");
 mongoose.set('bufferCommands', false);
 
 let app = null;
-let dbReady = false;
+let connectionPromise = null;
 
-// Connect immediately on cold start
-if (!dbReady && process.env.MONGO_URI) {
-  mongoose.connect(process.env.MONGO_URI, {
+// Start connection on cold start
+if (!connectionPromise) {
+  connectionPromise = mongoose.connect(process.env.MONGO_URI, {
     serverSelectionTimeoutMS: 10000,
     socketTimeoutMS: 45000,
-  }).then(() => {
-    dbReady = true;
-    console.log("MongoDB connected on cold start");
   }).catch(err => {
     console.error("MongoDB connection failed:", err.message);
+    connectionPromise = null;
+    throw err;
   });
 }
 
@@ -31,13 +30,9 @@ module.exports = async (req, res) => {
   }
 
   try {
-    // Wait for connection if not ready
-    if (!dbReady && mongoose.connection.readyState !== 1) {
-      let attempts = 0;
-      while (mongoose.connection.readyState !== 1 && attempts < 50) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-        attempts++;
-      }
+    // Wait for connection to complete
+    if (connectionPromise) {
+      await connectionPromise;
     }
 
     // Load app once
