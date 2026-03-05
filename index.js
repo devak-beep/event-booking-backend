@@ -1,4 +1,8 @@
 require("dotenv").config();
+const mongoose = require("mongoose");
+
+// Disable buffering globally BEFORE any models are loaded
+mongoose.set('bufferCommands', false);
 
 let app = null;
 let dbConnected = false;
@@ -25,7 +29,7 @@ module.exports = async (req, res) => {
       console.log("[VERCEL] Database connected");
     }
 
-    // Load app once
+    // Load app once (AFTER DB is connected)
     if (!app) {
       console.log("[VERCEL] Loading app...");
       app = require("./src/app");
@@ -34,7 +38,7 @@ module.exports = async (req, res) => {
 
     return app(req, res);
   } catch (error) {
-    console.error("[VERCEL] Error:", error.message);
+    console.error("[VERCEL] Error:", error.message, error.stack);
     if (!res.headersSent) {
       return res.status(500).json({
         error: "Server error",
