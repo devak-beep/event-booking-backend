@@ -7,6 +7,8 @@
 const express = require("express");
 // Import CORS to allow frontend to talk to backend
 const cors = require("cors");
+// Import mongoose to check connection
+const mongoose = require("mongoose");
 // Import middleware for automatic error handling in async functions
 // Without this, errors in async functions would crash the server
 require("express-async-errors");
@@ -34,6 +36,18 @@ app.use(correlationMiddleware);
 // This allows the server to read JSON from request bodies
 // Example: POST /api/users/register with {"name": "John"}
 app.use(express.json());
+
+// MIDDLEWARE: Check database connection before processing requests
+app.use((req, res, next) => {
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({
+      success: false,
+      message: "Database not connected",
+      error: "Service temporarily unavailable"
+    });
+  }
+  next();
+});
 
 // REGISTER ROUTES: Mount route handlers at different API endpoints
 // Example: POST /api/users/register → handled by userRoutes
