@@ -27,26 +27,26 @@ exports.submitRequest = async (req, res) => {
     const userId = req.headers["x-user-id"];
 
     if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: "User ID required",
-      });
+      return res.status(401).json({ success: false, message: "User ID required" });
     }
 
     const {
       name,
       description,
-      eventDate,
+      eventType,      // "single-day" | "multi-day"
+      eventDate,      // start date
+      endDate,        // end date (multi-day only)
+      passOptions,    // { dailyPass: { enabled, price }, seasonPass: { enabled, price } }
       totalSeats,
       type,
       category,
-      amount,
+      amount,         // single-day ticket price (0 for multi-day)
       currency,
       image,
       idempotencyKey,
     } = req.body;
 
-    // Validate required fields
+    // ── Validate required fields ─────────────────────────────
     if (!name || !eventDate || !totalSeats) {
       return res.status(400).json({
         success: false,
@@ -54,7 +54,7 @@ exports.submitRequest = async (req, res) => {
       });
     }
 
-    // Idempotency check - prevent duplicate submissions
+    // ── Idempotency check ────────────────────────────────────
     if (idempotencyKey) {
       const existingRequest = await EventRequest.findOne({ idempotencyKey });
       if (existingRequest) {
@@ -68,34 +68,81 @@ exports.submitRequest = async (req, res) => {
       }
     }
 
-    // Validate event date is in future
-    if (new Date(eventDate) <= new Date()) {
+    // ── Validate event date ──────────────────────────────────
+    const startDate = new Date(eventDate);
+    if (startDate <= new Date()) {
       return res.status(400).json({
         success: false,
-        message: "Event date must be in the future",
+        message: "Event start date must be in the future",
       });
     }
 
-    // Create event request
-    const eventRequest = new EventRequest({
+    // ── Validate multi-day specifics ─────────────────────────
+    const resolvedEventType = eventType || "single-day";
+
+    if (resolvedEventType === "multi-day") {
+      if (!endDate) {
+        return res.status(400).json({
+          success: false,
+          message: "End date is required for multi-day events",
+        });
+      }
+
+      const end = new Date(endDate);
+      if (end <= startDate) {
+        return res.status(400).json({
+          success: false,
+          message: "End date must be after the start date",
+        });
+      }
+
+      // At least one pass option must be enabled with a valid price
+      const dailyEnabled  = passOptions?.dailyPass?.enabled  && passOptions.dailyPass.price  > 0;
+      const seasonEnabled = passOptions?.seasonPass?.enabled && passOptions.seasonPass.price > 0;
+
+      if (!dailyEnabled && !seasonEnabled) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Multi-day events must have at least one pass option (Day Pass or Season Pass) with a price greater than 0",
+        });
+      }
+    }
+
+    // ── Build and save the request ───────────────────────────
+    const eventRequestData = {
       name,
       description,
+      eventType: resolvedEventType,
       eventDate,
       totalSeats,
       type: type || "public",
       category: category || [],
-      amount: amount || 0,
+      amount: resolvedEventType === "single-day" ? (amount || 0) : 0,
       currency: currency || "INR",
       image,
       requestedBy: userId,
       status: "PENDING",
       platformFee: PLATFORM_FEE,
       idempotencyKey: idempotencyKey || null,
-    });
+    };
 
+    if (resolvedEventType === "multi-day") {
+      eventRequestData.endDate = endDate;
+      eventRequestData.passOptions = {
+        dailyPass: {
+          enabled: passOptions?.dailyPass?.enabled || false,
+          price:   passOptions?.dailyPass?.price   || 0,
+        },
+        seasonPass: {
+          enabled: passOptions?.seasonPass?.enabled || false,
+          price:   passOptions?.seasonPass?.price   || 0,
+        },
+      };
+    }
+
+    const eventRequest = new EventRequest(eventRequestData);
     await eventRequest.save();
-
-    // Populate requester details
     await eventRequest.populate("requestedBy", "name email");
 
     res.status(201).json({
@@ -122,10 +169,7 @@ exports.getMyRequests = async (req, res) => {
     const userId = req.headers["x-user-id"];
 
     if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: "User ID required",
-      });
+      return res.status(401).json({ success: false, message: "User ID required" });
     }
 
     const requests = await EventRequest.find({ requestedBy: userId })
@@ -134,11 +178,7 @@ exports.getMyRequests = async (req, res) => {
       .populate("createdEventId", "name")
       .sort({ createdAt: -1 });
 
-    res.status(200).json({
-      success: true,
-      count: requests.length,
-      requests,
-    });
+    res.status(200).json({ success: true, count: requests.length, requests });
   } catch (error) {
     console.error("Get my requests error:", error);
     res.status(500).json({
@@ -156,7 +196,6 @@ exports.getPendingRequests = async (req, res) => {
   try {
     const userRole = req.headers["x-user-role"];
 
-    // Only admin and superAdmin can access
     if (userRole !== "admin" && userRole !== "superAdmin") {
       return res.status(403).json({
         success: false,
@@ -168,11 +207,7 @@ exports.getPendingRequests = async (req, res) => {
       .populate("requestedBy", "name email")
       .sort({ createdAt: -1 });
 
-    res.status(200).json({
-      success: true,
-      count: requests.length,
-      requests,
-    });
+    res.status(200).json({ success: true, count: requests.length, requests });
   } catch (error) {
     console.error("Get pending requests error:", error);
     res.status(500).json({
@@ -190,7 +225,6 @@ exports.getAllRequests = async (req, res) => {
   try {
     const userRole = req.headers["x-user-role"];
 
-    // Only admin and superAdmin can access
     if (userRole !== "admin" && userRole !== "superAdmin") {
       return res.status(403).json({
         success: false,
@@ -207,11 +241,7 @@ exports.getAllRequests = async (req, res) => {
       .populate("createdEventId", "name")
       .sort({ createdAt: -1 });
 
-    res.status(200).json({
-      success: true,
-      count: requests.length,
-      requests,
-    });
+    res.status(200).json({ success: true, count: requests.length, requests });
   } catch (error) {
     console.error("Get all requests error:", error);
     res.status(500).json({
@@ -228,11 +258,10 @@ exports.getAllRequests = async (req, res) => {
 exports.approveRequest = async (req, res) => {
   try {
     const { requestId } = req.params;
-    const adminId = req.headers["x-user-id"];
+    const adminId  = req.headers["x-user-id"];
     const userRole = req.headers["x-user-role"];
     const { adminNote } = req.body;
 
-    // Only admin and superAdmin can approve
     if (userRole !== "admin" && userRole !== "superAdmin") {
       return res.status(403).json({
         success: false,
@@ -241,12 +270,8 @@ exports.approveRequest = async (req, res) => {
     }
 
     const eventRequest = await EventRequest.findById(requestId);
-
     if (!eventRequest) {
-      return res.status(404).json({
-        success: false,
-        message: "Event request not found",
-      });
+      return res.status(404).json({ success: false, message: "Event request not found" });
     }
 
     if (eventRequest.status !== "PENDING") {
@@ -256,30 +281,22 @@ exports.approveRequest = async (req, res) => {
       });
     }
 
-    // Set payment expiry (48 hours from now)
     const paymentExpiresAt = new Date();
-    paymentExpiresAt.setHours(
-      paymentExpiresAt.getHours() + PAYMENT_EXPIRY_HOURS,
-    );
+    paymentExpiresAt.setHours(paymentExpiresAt.getHours() + PAYMENT_EXPIRY_HOURS);
 
-    // Update request status
-    eventRequest.status = "APPROVED";
-    eventRequest.reviewedBy = adminId;
-    eventRequest.reviewedAt = new Date();
-    eventRequest.adminNote =
-      adminNote || "Your event request has been approved!";
+    eventRequest.status           = "APPROVED";
+    eventRequest.reviewedBy       = adminId;
+    eventRequest.reviewedAt       = new Date();
+    eventRequest.adminNote        = adminNote || "Your event request has been approved!";
     eventRequest.paymentExpiresAt = paymentExpiresAt;
 
     await eventRequest.save();
-
-    // Populate for response
     await eventRequest.populate("requestedBy", "name email");
     await eventRequest.populate("reviewedBy", "name email");
 
     res.status(200).json({
       success: true,
-      message:
-        "Event request approved. User will be notified to pay platform fee.",
+      message: "Event request approved. User will be notified to pay platform fee.",
       eventRequest,
     });
   } catch (error) {
@@ -298,11 +315,10 @@ exports.approveRequest = async (req, res) => {
 exports.rejectRequest = async (req, res) => {
   try {
     const { requestId } = req.params;
-    const adminId = req.headers["x-user-id"];
+    const adminId  = req.headers["x-user-id"];
     const userRole = req.headers["x-user-role"];
     const { adminNote } = req.body;
 
-    // Only admin and superAdmin can reject
     if (userRole !== "admin" && userRole !== "superAdmin") {
       return res.status(403).json({
         success: false,
@@ -311,12 +327,8 @@ exports.rejectRequest = async (req, res) => {
     }
 
     const eventRequest = await EventRequest.findById(requestId);
-
     if (!eventRequest) {
-      return res.status(404).json({
-        success: false,
-        message: "Event request not found",
-      });
+      return res.status(404).json({ success: false, message: "Event request not found" });
     }
 
     if (eventRequest.status !== "PENDING") {
@@ -326,24 +338,16 @@ exports.rejectRequest = async (req, res) => {
       });
     }
 
-    // Update request status
-    eventRequest.status = "REJECTED";
+    eventRequest.status     = "REJECTED";
     eventRequest.reviewedBy = adminId;
     eventRequest.reviewedAt = new Date();
-    eventRequest.adminNote =
-      adminNote || "Your event request has been rejected.";
+    eventRequest.adminNote  = adminNote || "Your event request has been rejected.";
 
     await eventRequest.save();
-
-    // Populate for response
     await eventRequest.populate("requestedBy", "name email");
     await eventRequest.populate("reviewedBy", "name email");
 
-    res.status(200).json({
-      success: true,
-      message: "Event request rejected",
-      eventRequest,
-    });
+    res.status(200).json({ success: true, message: "Event request rejected", eventRequest });
   } catch (error) {
     console.error("Reject request error:", error);
     res.status(500).json({
@@ -363,22 +367,14 @@ exports.createPaymentOrder = async (req, res) => {
     const userId = req.headers["x-user-id"];
 
     if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: "User ID required",
-      });
+      return res.status(401).json({ success: false, message: "User ID required" });
     }
 
     const eventRequest = await EventRequest.findById(requestId);
-
     if (!eventRequest) {
-      return res.status(404).json({
-        success: false,
-        message: "Event request not found",
-      });
+      return res.status(404).json({ success: false, message: "Event request not found" });
     }
 
-    // Verify user owns this request
     if (eventRequest.requestedBy.toString() !== userId) {
       return res.status(403).json({
         success: false,
@@ -386,22 +382,14 @@ exports.createPaymentOrder = async (req, res) => {
       });
     }
 
-    // Verify request is approved or payment pending (allow retry)
-    if (
-      eventRequest.status !== "APPROVED" &&
-      eventRequest.status !== "PAYMENT_PENDING"
-    ) {
+    if (eventRequest.status !== "APPROVED" && eventRequest.status !== "PAYMENT_PENDING") {
       return res.status(400).json({
         success: false,
         message: `Cannot pay for ${eventRequest.status.toLowerCase()} request`,
       });
     }
 
-    // Check if payment expired
-    if (
-      eventRequest.paymentExpiresAt &&
-      new Date() > eventRequest.paymentExpiresAt
-    ) {
+    if (eventRequest.paymentExpiresAt && new Date() > eventRequest.paymentExpiresAt) {
       eventRequest.status = "EXPIRED";
       await eventRequest.save();
       return res.status(400).json({
@@ -410,19 +398,13 @@ exports.createPaymentOrder = async (req, res) => {
       });
     }
 
-    // Create Razorpay order
     const razorpayOrder = await razorpay.orders.create({
-      amount: eventRequest.platformFee * 100, // Convert to paise
+      amount: eventRequest.platformFee * 100,
       currency: "INR",
       receipt: `evtreq_${requestId.slice(-10)}`,
-      notes: {
-        type: "event_request",
-        requestId: requestId,
-        userId: userId,
-      },
+      notes: { type: "event_request", requestId, userId },
     });
 
-    // Update request with order details
     eventRequest.razorpayOrderId = razorpayOrder.id;
     eventRequest.status = "PAYMENT_PENDING";
     await eventRequest.save();
@@ -431,15 +413,12 @@ exports.createPaymentOrder = async (req, res) => {
       success: true,
       message: "Payment order created",
       order: {
-        id: razorpayOrder.id,
-        amount: razorpayOrder.amount,
+        id:       razorpayOrder.id,
+        amount:   razorpayOrder.amount,
         currency: razorpayOrder.currency,
       },
       platformFee: eventRequest.platformFee,
-      eventRequest: {
-        id: eventRequest._id,
-        name: eventRequest.name,
-      },
+      eventRequest: { id: eventRequest._id, name: eventRequest.name },
     });
   } catch (error) {
     console.error("Create payment order error:", error);
@@ -458,26 +437,17 @@ exports.verifyPaymentAndCreateEvent = async (req, res) => {
   try {
     const { requestId } = req.params;
     const userId = req.headers["x-user-id"];
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } =
-      req.body;
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
 
     if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: "User ID required",
-      });
+      return res.status(401).json({ success: false, message: "User ID required" });
     }
 
     const eventRequest = await EventRequest.findById(requestId);
-
     if (!eventRequest) {
-      return res.status(404).json({
-        success: false,
-        message: "Event request not found",
-      });
+      return res.status(404).json({ success: false, message: "Event request not found" });
     }
 
-    // Verify user owns this request
     if (eventRequest.requestedBy.toString() !== userId) {
       return res.status(403).json({
         success: false,
@@ -485,18 +455,14 @@ exports.verifyPaymentAndCreateEvent = async (req, res) => {
       });
     }
 
-    // Verify request status
-    if (
-      eventRequest.status !== "PAYMENT_PENDING" &&
-      eventRequest.status !== "APPROVED"
-    ) {
+    if (eventRequest.status !== "PAYMENT_PENDING" && eventRequest.status !== "APPROVED") {
       return res.status(400).json({
         success: false,
         message: `Cannot process payment for ${eventRequest.status.toLowerCase()} request`,
       });
     }
 
-    // Verify Razorpay signature
+    // ── Verify Razorpay signature ─────────────────────────────
     const crypto = require("crypto");
     const expectedSignature = crypto
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
@@ -506,43 +472,54 @@ exports.verifyPaymentAndCreateEvent = async (req, res) => {
     if (expectedSignature !== razorpay_signature) {
       eventRequest.paymentStatus = "FAILED";
       await eventRequest.save();
-      return res.status(400).json({
-        success: false,
-        message: "Payment verification failed",
-      });
+      return res.status(400).json({ success: false, message: "Payment verification failed" });
     }
 
-    // Payment verified! Create the event
-    const event = new Event({
-      name: eventRequest.name,
-      description: eventRequest.description,
-      eventDate: eventRequest.eventDate,
-      totalSeats: eventRequest.totalSeats,
-      availableSeats: eventRequest.totalSeats,
-      type: eventRequest.type,
-      category: eventRequest.category,
-      amount: eventRequest.amount,
-      currency: eventRequest.currency,
-      image: eventRequest.image,
-      createdBy: eventRequest.requestedBy,
-      approvedBy: eventRequest.reviewedBy,
+    // ── Create the Event ─────────────────────────────────────
+    const eventPayload = {
+      name:             eventRequest.name,
+      description:      eventRequest.description,
+      eventType:        eventRequest.eventType || "single-day",
+      eventDate:        eventRequest.eventDate,
+      totalSeats:       eventRequest.totalSeats,
+      availableSeats:   eventRequest.totalSeats,
+      type:             eventRequest.type,
+      category:         eventRequest.category,
+      amount:           eventRequest.amount,
+      currency:         eventRequest.currency,
+      image:            eventRequest.image,
+      createdBy:        eventRequest.requestedBy,
+      approvedBy:       eventRequest.reviewedBy,
       createdViaRequest: true,
-      eventRequestId: eventRequest._id,
-      isPublished: true,
-      paymentStatus: "PAID",
-      creationFee: eventRequest.platformFee,
-    });
+      eventRequestId:   eventRequest._id,
+      isPublished:      true,
+      paymentStatus:    "PAID",
+      creationFee:      eventRequest.platformFee,
+    };
 
+    // Add multi-day fields if applicable
+    if (eventRequest.eventType === "multi-day") {
+      const { generateDailySeatsMap } = require("../utils/seatManager");
+      eventPayload.endDate     = eventRequest.endDate;
+      eventPayload.passOptions = eventRequest.passOptions;
+      // Populate per-day seat inventory
+      eventPayload.dailySeats  = generateDailySeatsMap(
+        eventRequest.eventDate,
+        eventRequest.endDate,
+        eventRequest.totalSeats,
+      );
+    }
+
+    const event = new Event(eventPayload);
     await event.save();
 
-    // Update event request
-    eventRequest.status = "COMPLETED";
-    eventRequest.paymentStatus = "PAID";
+    // ── Update event request ──────────────────────────────────
+    eventRequest.status           = "COMPLETED";
+    eventRequest.paymentStatus    = "PAID";
     eventRequest.razorpayPaymentId = razorpay_payment_id;
-    eventRequest.createdEventId = event._id;
+    eventRequest.createdEventId   = event._id;
     await eventRequest.save();
 
-    // Populate for response
     await event.populate("createdBy", "name email");
     await event.populate("approvedBy", "name email");
 
@@ -550,10 +527,7 @@ exports.verifyPaymentAndCreateEvent = async (req, res) => {
       success: true,
       message: "Payment successful! Your event has been created.",
       event,
-      eventRequest: {
-        id: eventRequest._id,
-        status: eventRequest.status,
-      },
+      eventRequest: { id: eventRequest._id, status: eventRequest.status },
     });
   } catch (error) {
     console.error("Verify payment error:", error);
@@ -571,7 +545,7 @@ exports.verifyPaymentAndCreateEvent = async (req, res) => {
 exports.getRequestById = async (req, res) => {
   try {
     const { requestId } = req.params;
-    const userId = req.headers["x-user-id"];
+    const userId   = req.headers["x-user-id"];
     const userRole = req.headers["x-user-role"];
 
     const eventRequest = await EventRequest.findById(requestId)
@@ -580,13 +554,9 @@ exports.getRequestById = async (req, res) => {
       .populate("createdEventId", "name");
 
     if (!eventRequest) {
-      return res.status(404).json({
-        success: false,
-        message: "Event request not found",
-      });
+      return res.status(404).json({ success: false, message: "Event request not found" });
     }
 
-    // Check access: user can only view their own requests, admin can view all
     const isOwner = eventRequest.requestedBy._id.toString() === userId;
     const isAdmin = userRole === "admin" || userRole === "superAdmin";
 
@@ -597,10 +567,7 @@ exports.getRequestById = async (req, res) => {
       });
     }
 
-    res.status(200).json({
-      success: true,
-      eventRequest,
-    });
+    res.status(200).json({ success: true, eventRequest });
   } catch (error) {
     console.error("Get request by ID error:", error);
     res.status(500).json({

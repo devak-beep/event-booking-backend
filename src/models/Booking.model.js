@@ -6,12 +6,12 @@ const mongoose = require("mongoose");
 
 // Define all possible booking statuses
 const BOOKING_STATUS = {
-  INITIATED: "INITIATED", // Booking just started (lock created)
+  INITIATED: "INITIATED",         // Booking just started (lock created)
   PAYMENT_PENDING: "PAYMENT_PENDING", // Waiting for payment
-  CONFIRMED: "CONFIRMED", // Payment received, booking confirmed
-  CANCELLED: "CANCELLED", // User cancelled the booking
-  EXPIRED: "EXPIRED", // Payment time expired
-  FAILED: "FAILED", // Payment failed
+  CONFIRMED: "CONFIRMED",         // Payment received, booking confirmed
+  CANCELLED: "CANCELLED",         // User cancelled the booking
+  EXPIRED: "EXPIRED",             // Payment time expired
+  FAILED: "FAILED",               // Payment failed
 };
 
 const bookingSchema = new mongoose.Schema(
@@ -34,20 +34,36 @@ const bookingSchema = new mongoose.Schema(
     idempotencyKey: {
       type: String,
       unique: true,
-      sparse: true, // Allow multiple nulls (for optional field)
+      sparse: true,
     },
 
     // FIELD: Seat numbers (array of seat identifiers)
-    // Example: ["A1", "A2", "A3"]
     seats: {
-      type: [String], // Array of strings
+      type: [String],
       required: true,
+    },
+
+    // FIELD: Pass type
+    //   "regular" – single-day event (no pass concept)
+    //   "daily"   – multi-day event, one day selected
+    //   "season"  – multi-day event, all days
+    passType: {
+      type: String,
+      enum: ["regular", "daily", "season"],
+      default: "regular",
+    },
+
+    // FIELD: Selected date for daily pass (multi-day events only)
+    selectedDate: {
+      type: Date,
+      required: function () {
+        return this.passType === "daily";
+      },
     },
 
     // FIELD: Current booking status
     status: {
       type: String,
-      // Can only be one of the BOOKING_STATUS values
       enum: Object.values(BOOKING_STATUS),
       default: BOOKING_STATUS.INITIATED,
     },
@@ -56,34 +72,27 @@ const bookingSchema = new mongoose.Schema(
     seatLockId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "SeatLock",
-      unique: true, // Each booking has one lock, each lock has one booking
+      unique: true,
     },
 
     // FIELD: When must payment be completed
-    // If payment not made by this time, booking expires
     paymentExpiresAt: {
       type: Date,
-      required: false, // Optional field
+      required: false,
     },
 
-    // FIELD: Payment amount for this booking
+    // FIELD: Payment amount for this booking (in rupees)
     amount: {
       type: Number,
-      required: false, // Optional for existing bookings
-      min: 0, // Cannot be negative
+      required: false,
+      min: 0,
     },
 
-    // FIELD: Refund amount (if payment failed and refund processed)
+    // FIELD: Refund amount (if cancelled / failed)
     refundAmount: {
       type: Number,
       default: 0,
-      min: 0, // Cannot be negative
-    },
-
-    // FIELD: Stripe checkout session ID
-    stripeSessionId: {
-      type: String,
-      required: false,
+      min: 0,
     },
 
     // FIELD: Razorpay order ID
@@ -98,9 +107,7 @@ const bookingSchema = new mongoose.Schema(
       required: false,
     },
   },
-  { timestamps: true }, // Add createdAt and updatedAt fields
+  { timestamps: true },
 );
 
-// Create and export Booking model
-// MongoDB will create a "bookings" collection
 module.exports = mongoose.model("Booking", bookingSchema);

@@ -1,37 +1,31 @@
-const mongoose = require("mongoose");
-const SeatLock = require("../models/SeatLock.model");
-const Event = require("../models/Event.model");
-const JobExecution = require("../models/JobExecution.model");
+// ============================================
+// LOCK EXPIRY JOB
+// Automatically expire stale seat locks and restore seats
+// ============================================
+
+const mongoose      = require("mongoose");
+const SeatLock      = require("../models/SeatLock.model");
+const JobExecution  = require("../models/JobExecution.model");
+const {
+  restoreSeats,
+  restoreDailySeats,
+  restoreSeasonSeats,
+  toDateKey,
+} = require("../utils/seatManager");
 
 const LOCK_EXPIRY_INTERVAL_MINUTES = 1;
 
-/**
- * TASK 6.1 - Lock Expiry Worker
- *
- * Automatically expire stale seat locks and restore seats
- *
- * Acceptance Criteria:
- * ✅ Expired locks are released
- * ✅ Seats are restored
- */
 async function expireLocks() {
-  // 1️⃣ Job safety check - prevent duplicate execution
-  const existingJob = await JobExecution.findOne({
-    jobType: "EXPIRE_LOCKS",
-    status: "RUNNING",
-  });
-
+  // ── Job safety: prevent concurrent runs ─────────────────────────────────
+  const existingJob = await JobExecution.findOne({ jobType: "EXPIRE_LOCKS", status: "RUNNING" });
   if (existingJob) {
-    console.log(
-      "[LOCK EXPIRY JOB] Another instance is already running, skipping...",
-    );
+    console.log("[LOCK EXPIRY JOB] Already running – skipping");
     return;
   }
 
-  // 2️⃣ Create job execution record
   const jobExecution = await JobExecution.create({
     jobType: "EXPIRE_LOCKS",
-    status: "RUNNING",
+    status:  "RUNNING",
     startedAt: new Date(),
   });
 
@@ -41,98 +35,75 @@ async function expireLocks() {
   try {
     const now = new Date();
 
-    // 3️⃣ Find expired locks (status = ACTIVE, expiresAt < now)
     const expiredLocks = await SeatLock.find({
-      status: "ACTIVE",
+      status:    "ACTIVE",
       expiresAt: { $lt: now },
     }).session(session);
 
-    console.log(`[LOCK EXPIRY JOB] Found ${expiredLocks.length} expired locks`);
-
-    let processed = 0;
-    let errors = 0;
+    console.log(`[LOCK EXPIRY JOB] Found ${expiredLocks.length} expired lock(s)`);
 
     if (expiredLocks.length === 0) {
       await session.commitTransaction();
       session.endSession();
-
-      // Mark job as completed
       jobExecution.status = "COMPLETED";
       jobExecution.completedAt = new Date();
-      jobExecution.results = {
-        processed: 0,
-        errors: 0,
-        details: "No expired locks found",
-      };
+      jobExecution.results = { processed: 0, errors: 0, details: "No expired locks" };
       await jobExecution.save();
       return;
     }
 
+    let processed = 0;
+    let errors    = 0;
+
     for (const lock of expiredLocks) {
       try {
-        // 4️⃣ Mark lock as EXPIRED
         lock.status = "EXPIRED";
         await lock.save({ session });
 
-        // 5️⃣ Restore seats to the event (with constraint check)
-        const event = await Event.findById(lock.eventId).session(session);
-        if (event) {
-          const newAvailableSeats = Math.min(
-            event.availableSeats + lock.seats,
-            event.totalSeats,
-          );
-          event.availableSeats = newAvailableSeats;
-          await event.save({ session });
-          console.log(
-            `[LOCK EXPIRY JOB] Expired lock ${lock._id}, restored seats. New available: ${newAvailableSeats}/${event.totalSeats}`,
-          );
+        // ── Restore seats by passType ──────────────────────────────────────
+        if (lock.passType === "regular") {
+          await restoreSeats(lock.eventId, lock.seats, session);
+        } else if (lock.passType === "daily") {
+          const dateKey = lock.selectedDate ? toDateKey(lock.selectedDate) : null;
+          if (dateKey) {
+            await restoreDailySeats(lock.eventId, dateKey, lock.seats, session);
+          } else {
+            console.warn(`[LOCK EXPIRY JOB] daily lock ${lock._id} has no selectedDate`);
+          }
+        } else if (lock.passType === "season") {
+          await restoreSeasonSeats(lock.eventId, lock.seats, session);
         }
 
+        console.log(`[LOCK EXPIRY JOB] Expired lock ${lock._id} (passType: ${lock.passType})`);
         processed++;
-      } catch (error) {
+      } catch (err) {
         errors++;
-        console.error(
-          `[LOCK EXPIRY JOB] Error processing lock ${lock._id}:`,
-          error.message,
-        );
+        console.error(`[LOCK EXPIRY JOB] Error on lock ${lock._id}:`, err.message);
       }
     }
 
     await session.commitTransaction();
     session.endSession();
 
-    // Mark job as completed
-    jobExecution.status = "COMPLETED";
+    jobExecution.status      = "COMPLETED";
     jobExecution.completedAt = new Date();
-    jobExecution.results = {
-      processed,
-      errors,
-      details: `Processed ${processed} locks, ${errors} errors`,
-    };
+    jobExecution.results     = { processed, errors, details: `${processed} expired, ${errors} errors` };
     await jobExecution.save();
 
-    console.log(
-      `[LOCK EXPIRY JOB] Successfully expired ${processed} locks, ${errors} errors`,
-    );
+    console.log(`[LOCK EXPIRY JOB] Done – ${processed} expired, ${errors} error(s)`);
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
 
-    // Mark job as failed
-    jobExecution.status = "FAILED";
+    jobExecution.status      = "FAILED";
     jobExecution.completedAt = new Date();
-    jobExecution.results = {
-      processed: 0,
-      errors: 1,
-      details: error.message,
-    };
+    jobExecution.results     = { processed: 0, errors: 1, details: error.message };
     await jobExecution.save();
 
-    console.error("[LOCK EXPIRY JOB ERROR]", error.message);
+    console.error("[LOCK EXPIRY JOB] Fatal error:", error.message);
   }
 }
 
-// Only run interval in non-serverless (traditional server) environment
 if (process.env.VERCEL !== "1") {
   setInterval(expireLocks, LOCK_EXPIRY_INTERVAL_MINUTES * 60 * 1000);
 }

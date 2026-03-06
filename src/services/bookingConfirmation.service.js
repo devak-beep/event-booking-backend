@@ -1,70 +1,85 @@
-const mongoose = require("mongoose");
-const SeatLock = require("../models/SeatLock.model");
-const Booking = require("../models/Booking.model");
-const Event = require("../models/Event.model");
-const { BOOKING_STATUS } = require("../utils/bookingStateMachine");
-const { logBookingStateChange } = require("../utils/logger");
+// ============================================
+// BOOKING CONFIRMATION SERVICE
+// Transactional booking creation from a SeatLock
+// ============================================
 
-// ========== Called after seat lock is created ==========
+const mongoose = require("mongoose");
+const SeatLock  = require("../models/SeatLock.model");
+const Booking   = require("../models/Booking.model");
+const Event     = require("../models/Event.model");
+const { BOOKING_STATUS }     = require("../utils/bookingStateMachine");
+const { logBookingStateChange } = require("../utils/logger");
+const {
+  restoreSeats,
+  restoreDailySeats,
+  restoreSeasonSeats,
+  toDateKey,
+} = require("../utils/seatManager");
+
+/**
+ * Called after a SeatLock is created.
+ * Creates a Booking in PAYMENT_PENDING state, copying passType / selectedDate
+ * from the lock so that subsequent seat-restoration code has full context.
+ */
 async function confirmBookingTransactional(lockId, correlationId = null) {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    // 1️⃣ Validate lock
+    // ── 1. Validate lock ──────────────────────────────────────────────────
     const lock = await SeatLock.findById(lockId).session(session);
 
     if (!lock) {
       throw new Error("INVALID_OR_EXPIRED_LOCK");
     }
 
-    // 2️⃣ Check lock expiry
+    // ── 2. Check lock expiry ──────────────────────────────────────────────
     if (lock.expiresAt < new Date()) {
-      // Release seats back to event
-      const event = await Event.findById(lock.eventId).session(session);
-      if (event) {
-        event.availableSeats += lock.seats;
-        event.availableSeats = Math.min(event.availableSeats, event.totalSeats);
-        await event.save({ session });
+      // Restore seats based on passType before deleting the lock
+      if (lock.passType === "regular") {
+        await restoreSeats(lock.eventId, lock.seats, session);
+      } else if (lock.passType === "daily") {
+        const dateKey = lock.selectedDate ? toDateKey(lock.selectedDate) : null;
+        if (dateKey) await restoreDailySeats(lock.eventId, dateKey, lock.seats, session);
+      } else if (lock.passType === "season") {
+        await restoreSeasonSeats(lock.eventId, lock.seats, session);
       }
 
       await SeatLock.deleteOne({ _id: lockId }).session(session);
       throw new Error("LOCK_EXPIRED");
     }
 
-    // 3️⃣ Idempotency check (IMPORTANT)
-    const existingBooking = await Booking.findOne({
-      seatLockId: lockId,
-    }).session(session);
-
+    // ── 3. Idempotency check ──────────────────────────────────────────────
+    const existingBooking = await Booking.findOne({ seatLockId: lockId }).session(session);
     if (existingBooking) {
       await session.commitTransaction();
       session.endSession();
       return existingBooking;
     }
 
-    // 4️⃣ Create booking with PAYMENT_PENDING status
-    const booking = await Booking.create(
-      [
-        {
-          event: lock.eventId,
-          user: lock.userId,
-          seats: Array.from({ length: lock.seats }, (_, i) => `SEAT-${i + 1}`),
-          seatLockId: lockId,
-          status: BOOKING_STATUS.PAYMENT_PENDING,
-          paymentExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
-        },
-      ],
-      { session },
-    );
+    // ── 4. Build booking payload ──────────────────────────────────────────
+    const bookingData = {
+      event:            lock.eventId,
+      user:             lock.userId,
+      seats:            Array.from({ length: lock.seats }, (_, i) => `SEAT-${i + 1}`),
+      seatLockId:       lockId,
+      passType:         lock.passType,   // "regular" | "daily" | "season"
+      status:           BOOKING_STATUS.PAYMENT_PENDING,
+      paymentExpiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 min
+    };
 
-    // 5️⃣ Keep seat lock ACTIVE (will be marked CONSUMED on payment success)
-    // or EXPIRED on payment failure/timeout
+    // Copy selectedDate for daily pass
+    if (lock.passType === "daily" && lock.selectedDate) {
+      bookingData.selectedDate = lock.selectedDate;
+    }
+
+    // ── 5. Create booking ─────────────────────────────────────────────────
+    const booking = await Booking.create([bookingData], { session });
 
     await session.commitTransaction();
     session.endSession();
 
-    // Log booking creation
+    // Log booking creation (outside transaction to avoid deadlock)
     await logBookingStateChange(
       booking[0]._id,
       null,
@@ -72,7 +87,7 @@ async function confirmBookingTransactional(lockId, correlationId = null) {
       lock.userId,
       correlationId,
       lock.eventId,
-      'BOOKING_CREATED'
+      "BOOKING_CREATED",
     );
 
     return booking[0];
@@ -83,6 +98,4 @@ async function confirmBookingTransactional(lockId, correlationId = null) {
   }
 }
 
-module.exports = {
-  confirmBookingTransactional,
-};
+module.exports = { confirmBookingTransactional };

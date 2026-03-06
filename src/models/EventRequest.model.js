@@ -7,7 +7,7 @@ const mongoose = require("mongoose");
 
 const eventRequestSchema = new mongoose.Schema(
   {
-    // FIELD: Event details (same as Event model)
+    // ─── Basic Event Info ────────────────────────────────────
     name: {
       type: String,
       required: true,
@@ -19,11 +19,38 @@ const eventRequestSchema = new mongoose.Schema(
       trim: true,
     },
 
+    // ─── Duration Type ─────────────────────────────────────
+    // "single-day" → one date  |  "multi-day" → start + end
+    eventType: {
+      type: String,
+      enum: ["single-day", "multi-day"],
+      default: "single-day",
+    },
+
+    // Start date (and only date for single-day events)
     eventDate: {
       type: Date,
       required: true,
     },
 
+    // End date — required only for multi-day events
+    endDate: {
+      type: Date,
+    },
+
+    // ─── Pass Options (multi-day events only) ───────────────
+    passOptions: {
+      dailyPass: {
+        enabled: { type: Boolean, default: false },
+        price:   { type: Number, min: 0, default: 0 },
+      },
+      seasonPass: {
+        enabled: { type: Boolean, default: false },
+        price:   { type: Number, min: 0, default: 0 },
+      },
+    },
+
+    // ─── Capacity & Visibility ──────────────────────────────
     totalSeats: {
       type: Number,
       required: true,
@@ -36,6 +63,7 @@ const eventRequestSchema = new mongoose.Schema(
       default: "public",
     },
 
+    // ─── Category ──────────────────────────────────────────
     category: [
       {
         type: String,
@@ -52,6 +80,9 @@ const eventRequestSchema = new mongoose.Schema(
       },
     ],
 
+    // ─── Pricing ────────────────────────────────────────────
+    // For single-day: price per ticket
+    // For multi-day:  use passOptions; amount stays 0
     amount: {
       type: Number,
       default: 0,
@@ -63,32 +94,31 @@ const eventRequestSchema = new mongoose.Schema(
       default: "INR",
     },
 
+    // ─── Image ──────────────────────────────────────────────
     image: {
       type: String, // Base64 encoded image
     },
 
-    // FIELD: Who submitted this request
+    // ─── Request Tracking ───────────────────────────────────
     requestedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
     },
 
-    // FIELD: Request status
     status: {
       type: String,
       enum: [
-        "PENDING", // Waiting for admin review
-        "APPROVED", // Admin approved, waiting for payment
-        "REJECTED", // Admin rejected
-        "PAYMENT_PENDING", // User initiated payment
-        "COMPLETED", // Payment done, event created
-        "EXPIRED", // Payment window expired
+        "PENDING",          // Waiting for admin review
+        "APPROVED",         // Admin approved, waiting for payment
+        "REJECTED",         // Admin rejected
+        "PAYMENT_PENDING",  // User initiated payment
+        "COMPLETED",        // Payment done, event created
+        "EXPIRED",          // Payment window expired
       ],
       default: "PENDING",
     },
 
-    // FIELD: Who approved/rejected this request
     reviewedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -98,18 +128,17 @@ const eventRequestSchema = new mongoose.Schema(
       type: Date,
     },
 
-    // FIELD: Admin's note (reason for rejection, etc.)
     adminNote: {
       type: String,
     },
 
-    // FIELD: Platform fee for event creation
+    // ─── Platform Fee ───────────────────────────────────────
     platformFee: {
       type: Number,
       default: 5000, // ₹5000 default
     },
 
-    // FIELD: Payment details
+    // ─── Payment Details ────────────────────────────────────
     razorpayOrderId: {
       type: String,
     },
@@ -124,18 +153,18 @@ const eventRequestSchema = new mongoose.Schema(
       default: "PENDING",
     },
 
-    // FIELD: Payment expiry (after approval)
+    // 48-hour payment window after approval
     paymentExpiresAt: {
       type: Date,
     },
 
-    // FIELD: Reference to created event (after completion)
+    // ─── Created Event Reference ────────────────────────────
     createdEventId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Event",
     },
 
-    // FIELD: Idempotency key for duplicate prevention
+    // ─── Idempotency ────────────────────────────────────────
     idempotencyKey: {
       type: String,
       unique: true,
@@ -145,9 +174,8 @@ const eventRequestSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-// Index for efficient queries
+// Indexes for efficient queries
 eventRequestSchema.index({ status: 1, createdAt: -1 });
 eventRequestSchema.index({ requestedBy: 1 });
-// Note: idempotencyKey already has unique:true in field definition, no need for extra index
 
 module.exports = mongoose.model("EventRequest", eventRequestSchema);

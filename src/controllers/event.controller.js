@@ -3,6 +3,45 @@ const Event = require("../models/Event.model");
 const SeatLock = require("../models/SeatLock.model");
 
 /**
+ * Helper function to generate daily seats map for multi-day events
+ */
+function generateDailySeatsMap(startDate, endDate, seatsPerDay) {
+  const dailySeats = new Map();
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  
+  // Set to start of day for consistent date keys
+  start.setHours(0, 0, 0, 0);
+  end.setHours(0, 0, 0, 0);
+  
+  let currentDate = new Date(start);
+  
+  while (currentDate <= end) {
+    const dateKey = currentDate.toISOString().split('T')[0]; // YYYY-MM-DD format
+    dailySeats.set(dateKey, {
+      total: seatsPerDay,
+      available: seatsPerDay
+    });
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+  
+  return dailySeats;
+}
+
+/**
+ * Helper function to check if season pass is available
+ * Season pass is only available if ALL days have at least 1 seat
+ */
+function isSeasonPassAvailable(dailySeats) {
+  for (const [date, seats] of dailySeats.entries()) {
+    if (seats.available < 1) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Create a new event
  * NOTE: This endpoint should NOT be used directly for event creation during payment flow.
  * Use verifyEventPayment in razorpay.controller.js instead to ensure payment is verified first.
@@ -131,9 +170,6 @@ exports.getAllPublicEvents = async (req, res) => {
   const events = await Event.find(filter)
     .populate("createdBy", "name email")
     .populate("approvedBy", "name email")
-    .select(
-      "name description eventDate totalSeats availableSeats type category amount currency image createdAt createdBy approvedBy createdViaRequest",
-    )
     .sort({ eventDate: 1 }); // Sort by event date (earliest first)
 
   res.status(200).json({
@@ -434,10 +470,7 @@ exports.getEventById = async (req, res) => {
 
   const event = await Event.findById(id)
     .populate("createdBy", "name email")
-    .populate("approvedBy", "name email")
-    .select(
-      "name description eventDate totalSeats availableSeats amount currency image createdAt createdBy approvedBy createdViaRequest",
-    );
+    .populate("approvedBy", "name email");
 
   if (!event) {
     return res.status(404).json({
