@@ -1,26 +1,58 @@
-const Razorpay = require("razorpay");
-const crypto = require("crypto");
-const Booking = require("../models/Booking.model");
-const SeatLock = require("../models/SeatLock.model");
-const Event = require("../models/Event.model");
-const mongoose = require("mongoose");
+// ============================================
+// RAZORPAY CONTROLLER
+// ============================================
 
-// Initialize Razorpay only if keys are provided
+const Razorpay   = require("razorpay");
+const crypto     = require("crypto");
+const mongoose   = require("mongoose");
+const Booking    = require("../models/Booking.model");
+const SeatLock   = require("../models/SeatLock.model");
+const Event      = require("../models/Event.model");
+const {
+  restoreSeats,
+  restoreDailySeats,
+  restoreSeasonSeats,
+  generateDailySeatsMap,
+  toDateKey,
+} = require("../utils/seatManager");
+
+// ─── Razorpay client (lazy-initialized) ─────────────────────────────────────
 let razorpay = null;
-if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
-  razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID,
-    key_secret: process.env.RAZORPAY_KEY_SECRET,
-  });
+function getRazorpay() {
+  if (!razorpay && process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
+    razorpay = new Razorpay({
+      key_id:     process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET,
+    });
+  }
+  return razorpay;
 }
 
-// Create Razorpay order
+// ─── Helper: compute booking amount based on passType ────────────────────────
+function computeBookingAmount(booking, event) {
+  const seatCount = booking.seats.length;
+
+  switch (booking.passType) {
+    case "daily":
+      // Daily pass: price × number of seats selected for that day
+      return (event.passOptions?.dailyPass?.price ?? 0) * seatCount;
+
+    case "season":
+      // Season pass: flat price × number of season passes (one per person)
+      return (event.passOptions?.seasonPass?.price ?? 0) * seatCount;
+
+    case "regular":
+    default:
+      // Single-day event: event amount × seat count
+      return (event.amount ?? 0) * seatCount;
+  }
+}
+
+// ─── POST /api/razorpay/create-order ────────────────────────────────────────
 exports.createOrder = async (req, res) => {
-  if (!razorpay) {
-    return res.status(503).json({
-      success: false,
-      message: "Payment gateway not configured",
-    });
+  const rz = getRazorpay();
+  if (!rz) {
+    return res.status(503).json({ success: false, message: "Payment gateway not configured" });
   }
 
   const { bookingId } = req.body;
@@ -29,79 +61,64 @@ exports.createOrder = async (req, res) => {
     const booking = await Booking.findById(bookingId).populate("event");
 
     if (!booking) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Booking not found" });
+      return res.status(404).json({ success: false, message: "Booking not found" });
     }
 
     if (booking.status !== "PAYMENT_PENDING") {
-      return res
-        .status(400)
-        .json({ success: false, message: "Booking not ready for payment" });
+      return res.status(400).json({ success: false, message: "Booking not ready for payment" });
     }
 
-    const amount = booking.event.amount * booking.seats.length * 100; // Convert to paise
+    const amountInRupees = computeBookingAmount(booking, booking.event);
+    const amountInPaise  = amountInRupees * 100;
 
     const options = {
-      amount: amount,
+      amount:   amountInPaise,
       currency: "INR",
-      receipt: `booking_${bookingId}`,
+      receipt:  `booking_${bookingId}`,
       notes: {
-        bookingId: bookingId.toString(),
-        eventName: booking.event.name,
-        seats: booking.seats.length,
+        bookingId:  bookingId.toString(),
+        eventName:  booking.event.name,
+        seats:      booking.seats.length,
+        passType:   booking.passType,
       },
     };
 
-    const order = await razorpay.orders.create(options);
+    const order = await rz.orders.create(options);
 
-    // Store order ID in booking
+    // Store order ID + amount on the booking
     booking.razorpayOrderId = order.id;
-    booking.amount = amount / 100; // Store in rupees
+    booking.amount = amountInRupees;
     await booking.save();
 
-    res.status(200).json({
-      success: true,
-      orderId: order.id,
-      amount: order.amount,
+    return res.status(200).json({
+      success:  true,
+      orderId:  order.id,
+      amount:   order.amount,
       currency: order.currency,
-      keyId: process.env.RAZORPAY_KEY_ID,
+      keyId:    process.env.RAZORPAY_KEY_ID,
     });
   } catch (error) {
-    console.error("Razorpay order creation error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to create payment order",
-      error: error.message,
-    });
+    console.error("[RAZORPAY] createOrder error:", error);
+    return res.status(500).json({ success: false, message: "Failed to create payment order", error: error.message });
   }
 };
 
-// Verify Razorpay payment
+// ─── POST /api/razorpay/verify-payment ──────────────────────────────────────
 exports.verifyPayment = async (req, res) => {
-  const {
-    razorpay_order_id,
-    razorpay_payment_id,
-    razorpay_signature,
-    bookingId,
-  } = req.body;
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature, bookingId } = req.body;
 
   try {
-    // Verify signature
-    const sign = razorpay_order_id + "|" + razorpay_payment_id;
+    // ── Signature check ───────────────────────────────────────────────────
+    const sign         = `${razorpay_order_id}|${razorpay_payment_id}`;
     const expectedSign = crypto
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
-      .update(sign.toString())
+      .update(sign)
       .digest("hex");
 
     if (razorpay_signature !== expectedSign) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid payment signature",
-      });
+      return res.status(400).json({ success: false, message: "Invalid payment signature" });
     }
 
-    // Payment verified, update booking
     const session = await mongoose.startSession();
     session.startTransaction();
 
@@ -110,55 +127,54 @@ exports.verifyPayment = async (req, res) => {
 
       if (!booking) {
         await session.abortTransaction();
-        return res
-          .status(404)
-          .json({ success: false, message: "Booking not found" });
+        session.endSession();
+        return res.status(404).json({ success: false, message: "Booking not found" });
       }
 
-      // Update booking to CONFIRMED
-      booking.status = "CONFIRMED";
+      // ── Idempotency: already confirmed ───────────────────────────────────
+      if (booking.status === "CONFIRMED") {
+        await session.commitTransaction();
+        session.endSession();
+        return res.status(200).json({
+          success: true,
+          message: "Payment already confirmed (idempotent)",
+          booking: { id: booking._id, status: booking.status, amount: booking.amount },
+          isRetry: true,
+        });
+      }
+
+      // Update booking
+      booking.status            = "CONFIRMED";
       booking.razorpayPaymentId = razorpay_payment_id;
       await booking.save({ session });
 
-      // Mark seat lock as CONSUMED
+      // Mark seat lock CONSUMED
       if (booking.seatLockId) {
-        await SeatLock.findByIdAndUpdate(
-          booking.seatLockId,
-          { status: "CONSUMED" },
-          { session },
-        );
+        await SeatLock.findByIdAndUpdate(booking.seatLockId, { status: "CONSUMED" }, { session });
       }
 
       await session.commitTransaction();
       session.endSession();
 
-      res.status(200).json({
+      return res.status(200).json({
         success: true,
         message: "Payment verified and booking confirmed",
-        booking: {
-          id: booking._id,
-          status: booking.status,
-          amount: booking.amount,
-        },
+        booking: { id: booking._id, status: booking.status, amount: booking.amount },
       });
-    } catch (error) {
+    } catch (err) {
       await session.abortTransaction();
       session.endSession();
-      throw error;
+      throw err;
     }
   } catch (error) {
-    console.error("Payment verification error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Payment verification failed",
-      error: error.message,
-    });
+    console.error("[RAZORPAY] verifyPayment error:", error);
+    return res.status(500).json({ success: false, message: "Payment verification failed", error: error.message });
   }
 };
 
-// Handle payment failure
+// ─── POST /api/razorpay/payment-failed ──────────────────────────────────────
 exports.paymentFailed = async (req, res) => {
-  const { bookingId, error } = req.body;
+  const { bookingId } = req.body;
 
   try {
     const session = await mongoose.startSession();
@@ -169,80 +185,53 @@ exports.paymentFailed = async (req, res) => {
     if (!booking) {
       await session.abortTransaction();
       session.endSession();
-      return res
-        .status(404)
-        .json({ success: false, message: "Booking not found" });
+      return res.status(404).json({ success: false, message: "Booking not found" });
     }
 
-    // BUGFIX: Check if booking is already processed (idempotency)
-    // Prevent double seat restoration if paymentFailed is called multiple times
+    // ── Idempotency ────────────────────────────────────────────────────────
     if (booking.status !== "PAYMENT_PENDING") {
       await session.abortTransaction();
       session.endSession();
-      return res.status(200).json({
-        success: true,
-        message: "Payment already processed (idempotent)",
-        alreadyProcessed: true,
-      });
+      return res.status(200).json({ success: true, message: "Payment already processed (idempotent)", alreadyProcessed: true });
     }
 
-    // Update booking to FAILED
     booking.status = "FAILED";
     await booking.save({ session });
 
-    // Restore seats - ONLY if lock is still ACTIVE
-    // BUGFIX: Check lock status to prevent double seat restoration
+    // ── Restore seats (pass-type aware) ───────────────────────────────────
     if (booking.seatLockId) {
       const lock = await SeatLock.findById(booking.seatLockId).session(session);
-      // Only restore seats if lock is ACTIVE (not already EXPIRED/CANCELLED/CONSUMED)
+
       if (lock && lock.status === "ACTIVE") {
-        // Use constraint to prevent availableSeats > totalSeats
-        const event = await Event.findById(lock.eventId).session(session);
-        if (event) {
-          const newAvailableSeats = Math.min(
-            event.availableSeats + lock.seats,
-            event.totalSeats,
-          );
-          event.availableSeats = newAvailableSeats;
-          await event.save({ session });
-          console.log(
-            `[PAYMENT FAILED] Restored ${lock.seats} seats. New available: ${newAvailableSeats}`,
-          );
+        if (lock.passType === "regular") {
+          await restoreSeats(lock.eventId, lock.seats, session);
+        } else if (lock.passType === "daily") {
+          const dateKey = lock.selectedDate ? toDateKey(lock.selectedDate) : null;
+          if (dateKey) await restoreDailySeats(lock.eventId, dateKey, lock.seats, session);
+        } else if (lock.passType === "season") {
+          await restoreSeasonSeats(lock.eventId, lock.seats, session);
         }
+
         lock.status = "EXPIRED";
         await lock.save({ session });
-        console.log(`[PAYMENT FAILED] Lock ${lock._id} marked as EXPIRED`);
-      } else if (lock) {
-        console.log(
-          `[PAYMENT FAILED] Lock ${lock._id} already ${lock.status}, skipping seat restoration`,
-        );
       }
     }
 
     await session.commitTransaction();
     session.endSession();
 
-    res.status(200).json({
-      success: true,
-      message: "Payment failed, seats restored",
-    });
+    return res.status(200).json({ success: true, message: "Payment failure recorded, seats restored" });
   } catch (err) {
-    console.error("Payment failure handling error:", err);
-    res.status(500).json({
-      success: false,
-      message: "Failed to handle payment failure",
-      error: err.message,
-    });
+    console.error("[RAZORPAY] paymentFailed error:", err);
+    return res.status(500).json({ success: false, message: "Failed to handle payment failure", error: err.message });
   }
 };
 
-// Create Razorpay order for event creation
+// ─── POST /api/razorpay/create-event-order ───────────────────────────────────
 exports.createEventOrder = async (req, res) => {
-  if (!razorpay) {
-    return res.status(503).json({
-      success: false,
-      message: "Payment gateway not configured",
-    });
+  const rz = getRazorpay();
+  if (!rz) {
+    return res.status(503).json({ success: false, message: "Payment gateway not configured" });
   }
 
   const { amount, eventData } = req.body;
@@ -251,174 +240,140 @@ exports.createEventOrder = async (req, res) => {
     const amountInPaise = amount * 100;
 
     const options = {
-      amount: amountInPaise,
+      amount:   amountInPaise,
       currency: "INR",
-      receipt: `event_creation_${Date.now()}`,
+      receipt:  `event_creation_${Date.now()}`,
       notes: {
-        eventName: eventData.name,
-        purpose: "event_creation",
+        eventName:  eventData.name,
+        purpose:    "event_creation",
         totalSeats: eventData.totalSeats,
       },
     };
 
-    const order = await razorpay.orders.create(options);
+    const order = await rz.orders.create(options);
 
-    res.status(200).json({
-      success: true,
-      orderId: order.id,
-      amount: order.amount,
+    return res.status(200).json({
+      success:  true,
+      orderId:  order.id,
+      amount:   order.amount,
       currency: order.currency,
-      keyId: process.env.RAZORPAY_KEY_ID,
+      keyId:    process.env.RAZORPAY_KEY_ID,
     });
   } catch (error) {
-    console.error("Razorpay event order creation error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to create payment order",
-      error: error.message,
-    });
+    console.error("[RAZORPAY] createEventOrder error:", error);
+    return res.status(500).json({ success: false, message: "Failed to create event payment order", error: error.message });
   }
 };
 
-// Verify Razorpay payment for event creation
+// ─── POST /api/razorpay/verify-event-payment ────────────────────────────────
 exports.verifyEventPayment = async (req, res) => {
-  const {
-    razorpay_order_id,
-    razorpay_payment_id,
-    razorpay_signature,
-    eventData,
-  } = req.body;
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature, eventData } = req.body;
 
   try {
-    // Check if payment already verified (idempotency)
+    // ── Idempotency ────────────────────────────────────────────────────────
     if (eventData.idempotencyKey) {
-      const existingEvent = await Event.findOne({
-        idempotencyKey: eventData.idempotencyKey,
-      });
+      const existingEvent = await Event.findOne({ idempotencyKey: eventData.idempotencyKey });
       if (existingEvent) {
         return res.status(200).json({
           success: true,
-          message: "Event already created with this payment",
-          event: {
-            id: existingEvent._id,
-            name: existingEvent.name,
-            paymentStatus: existingEvent.paymentStatus,
-          },
+          message: "Event already created with this payment (idempotent)",
+          event: { id: existingEvent._id, name: existingEvent.name, paymentStatus: existingEvent.paymentStatus },
+          isRetry: true,
         });
       }
     }
 
-    // Verify signature to ensure payment is authentic
-    const sign = razorpay_order_id + "|" + razorpay_payment_id;
+    // ── Signature check ────────────────────────────────────────────────────
+    const sign         = `${razorpay_order_id}|${razorpay_payment_id}`;
     const expectedSign = crypto
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
-      .update(sign.toString())
+      .update(sign)
       .digest("hex");
 
     if (razorpay_signature !== expectedSign) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid payment signature - Payment cannot be verified",
-      });
+      return res.status(400).json({ success: false, message: "Invalid payment signature" });
     }
 
-    // Payment verified, now create the event
+    // ── Validate required fields ───────────────────────────────────────────
     const {
-      name,
-      description,
-      eventDate,
-      totalSeats,
-      type,
-      category,
-      amount,
-      currency,
-      idempotencyKey,
-      image,
-      userId,
-      userRole,
+      name, description, eventType, eventDate, endDate,
+      totalSeats, type, category, amount, currency,
+      passOptions, idempotencyKey, image, userId,
     } = eventData;
 
-    // Validate required fields
-    if (
-      !name ||
-      !eventDate ||
-      !totalSeats ||
-      !category ||
-      amount === undefined
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Missing required event fields",
-      });
+    if (!name || !eventDate || !totalSeats || !category || amount === undefined) {
+      return res.status(400).json({ success: false, message: "Missing required event fields" });
     }
 
-    // Validate event date is in the future
-    const selectedDate = new Date(eventDate);
-    const now = new Date();
-    if (selectedDate <= now) {
-      return res.status(400).json({
-        success: false,
-        message: "Event date and time must be in the future",
-      });
+    if (new Date(eventDate) <= new Date()) {
+      return res.status(400).json({ success: false, message: "Event date must be in the future" });
     }
 
-    // Calculate creation charge
-    let creationCharge = 0;
-    if (totalSeats <= 50) creationCharge = 500;
-    else if (totalSeats <= 100) creationCharge = 1000;
-    else if (totalSeats <= 200) creationCharge = 1500;
-    else if (totalSeats <= 500) creationCharge = 2500;
-    else if (totalSeats <= 1000) creationCharge = 5000;
-    else if (totalSeats <= 2000) creationCharge = 8000;
-    else if (totalSeats <= 5000) creationCharge = 12000;
+    // ── Compute creation charge ────────────────────────────────────────────
+    let creationCharge = 500;
+    if      (totalSeats <= 50)    creationCharge = 500;
+    else if (totalSeats <= 100)   creationCharge = 1000;
+    else if (totalSeats <= 200)   creationCharge = 1500;
+    else if (totalSeats <= 500)   creationCharge = 2500;
+    else if (totalSeats <= 1000)  creationCharge = 5000;
+    else if (totalSeats <= 2000)  creationCharge = 8000;
+    else if (totalSeats <= 5000)  creationCharge = 12000;
     else if (totalSeats <= 10000) creationCharge = 20000;
     else if (totalSeats <= 20000) creationCharge = 35000;
     else if (totalSeats <= 50000) creationCharge = 60000;
-    else creationCharge = 100000;
+    else                          creationCharge = 100000;
 
-    // Use transaction to ensure event creation and payment recording are atomic
+    // ── Transactional event creation ───────────────────────────────────────
     const session = await mongoose.startSession();
     session.startTransaction();
 
     try {
-      // Create event with payment confirmed
-      const event = await Event.create(
-        [
-          {
-            name,
-            description: description ? description.trim() : "",
-            eventDate,
-            totalSeats,
-            availableSeats: totalSeats,
-            type: type || "public",
-            category,
-            amount,
-            currency: currency || "INR",
-            creationCharge,
-            createdBy: userId,
-            idempotencyKey: idempotencyKey || null,
-            image: image || null,
-            paymentStatus: "PAID",
-            razorpayOrderId: razorpay_order_id,
-            razorpayPaymentId: razorpay_payment_id,
-            creationFee: creationCharge,
-            isPublished: true,
-          },
-        ],
-        { session },
-      );
+      const resolvedEventType = eventType || "single-day";
+
+      const eventPayload = {
+        name,
+        description:    description ? description.trim() : "",
+        eventType:      resolvedEventType,
+        eventDate,
+        totalSeats,
+        availableSeats: totalSeats,
+        type:           type || "public",
+        category,
+        amount:         resolvedEventType === "single-day" ? (amount || 0) : 0,
+        currency:       currency || "INR",
+        creationCharge,
+        createdBy:      userId,
+        idempotencyKey: idempotencyKey || null,
+        image:          image || null,
+        paymentStatus:  "PAID",
+        razorpayOrderId:   razorpay_order_id,
+        razorpayPaymentId: razorpay_payment_id,
+        creationFee:    creationCharge,
+        isPublished:    true,
+      };
+
+      // ── Multi-day: add endDate, passOptions, AND populate dailySeats ──────
+      if (resolvedEventType === "multi-day") {
+        if (!endDate) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({ success: false, message: "endDate is required for multi-day events" });
+        }
+
+        eventPayload.endDate     = endDate;
+        eventPayload.passOptions = passOptions || {};
+        eventPayload.dailySeats  = generateDailySeatsMap(eventDate, endDate, totalSeats);
+      }
+
+      const [event] = await Event.create([eventPayload], { session });
 
       await session.commitTransaction();
       session.endSession();
 
-      res.status(200).json({
+      return res.status(200).json({
         success: true,
-        message: "Payment verified and event created successfully",
-        event: {
-          id: event[0]._id,
-          name: event[0].name,
-          paymentStatus: event[0].paymentStatus,
-        },
+        message: "Payment verified and event created",
+        event: { id: event._id, name: event.name, paymentStatus: event.paymentStatus },
       });
     } catch (sessionError) {
       await session.abortTransaction();
@@ -426,11 +381,7 @@ exports.verifyEventPayment = async (req, res) => {
       throw sessionError;
     }
   } catch (error) {
-    console.error("Event payment verification error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Payment verification failed - event was not created",
-      error: error.message,
-    });
+    console.error("[RAZORPAY] verifyEventPayment error:", error);
+    return res.status(500).json({ success: false, message: "Payment verification failed – event not created", error: error.message });
   }
 };
