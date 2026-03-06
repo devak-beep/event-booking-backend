@@ -1,39 +1,33 @@
-const mongoose = require("mongoose");
-const Booking = require("../models/Booking.model");
-const SeatLock = require("../models/SeatLock.model");
-const Event = require("../models/Event.model");
+// ============================================
+// BOOKING EXPIRY JOB
+// Automatically expire unpaid bookings and release locks
+// ============================================
+
+const mongoose     = require("mongoose");
+const Booking      = require("../models/Booking.model");
+const SeatLock     = require("../models/SeatLock.model");
 const JobExecution = require("../models/JobExecution.model");
 const { BOOKING_STATUS } = require("../utils/bookingStateMachine");
+const {
+  restoreSeats,
+  restoreDailySeats,
+  restoreSeasonSeats,
+  toDateKey,
+} = require("../utils/seatManager");
 
 const BOOKING_EXPIRY_INTERVAL_MINUTES = 1;
 
-/**
- * TASK 6.2 - Booking Expiry Worker
- *
- * Automatically expire unpaid bookings and release associated locks
- *
- * Acceptance Criteria:
- * ✅ Booking marked EXPIRED
- * ✅ Associated locks released
- */
 async function expireBookings() {
-  // 1️⃣ Job safety check - prevent duplicate execution
-  const existingJob = await JobExecution.findOne({
-    jobType: "EXPIRE_BOOKINGS",
-    status: "RUNNING",
-  });
-
+  // ── Job safety ────────────────────────────────────────────────────────────
+  const existingJob = await JobExecution.findOne({ jobType: "EXPIRE_BOOKINGS", status: "RUNNING" });
   if (existingJob) {
-    console.log(
-      "[BOOKING EXPIRY JOB] Another instance is already running, skipping...",
-    );
+    console.log("[BOOKING EXPIRY JOB] Already running – skipping");
     return;
   }
 
-  // 2️⃣ Create job execution record
   const jobExecution = await JobExecution.create({
-    jobType: "EXPIRE_BOOKINGS",
-    status: "RUNNING",
+    jobType:   "EXPIRE_BOOKINGS",
+    status:    "RUNNING",
     startedAt: new Date(),
   });
 
@@ -43,122 +37,92 @@ async function expireBookings() {
   try {
     const now = new Date();
 
-    // 3️⃣ Find expired bookings (PAYMENT_PENDING past paymentExpiresAt)
     const expiredBookings = await Booking.find({
-      status: BOOKING_STATUS.PAYMENT_PENDING,
+      status:           BOOKING_STATUS.PAYMENT_PENDING,
       paymentExpiresAt: { $lt: now },
     }).session(session);
 
-    console.log(
-      `[BOOKING EXPIRY JOB] Found ${expiredBookings.length} expired bookings`,
-    );
-
-    let processed = 0;
-    let errors = 0;
+    console.log(`[BOOKING EXPIRY JOB] Found ${expiredBookings.length} expired booking(s)`);
 
     if (expiredBookings.length === 0) {
       await session.commitTransaction();
       session.endSession();
-
-      // Mark job as completed
-      jobExecution.status = "COMPLETED";
+      jobExecution.status      = "COMPLETED";
       jobExecution.completedAt = new Date();
-      jobExecution.results = {
-        processed: 0,
-        errors: 0,
-        details: "No expired bookings found",
-      };
+      jobExecution.results     = { processed: 0, errors: 0, details: "No expired bookings" };
       await jobExecution.save();
       return;
     }
 
+    let processed = 0;
+    let errors    = 0;
+
     for (const booking of expiredBookings) {
       try {
-        // 4️⃣ Mark booking as EXPIRED with potential refund
+        // Mark booking expired + issue refund if charged
         booking.status = BOOKING_STATUS.EXPIRED;
-
-        // If booking has amount, assume payment might have been charged
         if (booking.amount && booking.amount > 0) {
-          booking.refundAmount = booking.amount; // Issue refund for timeout
-          console.log(
-            `[BOOKING EXPIRY JOB] Issuing refund of ${booking.amount} for timed-out booking ${booking._id}`,
-          );
+          booking.refundAmount = booking.amount;
         }
-
         await booking.save({ session });
 
-        // 5️⃣ Release associated lock if exists
+        // Release associated lock and restore seats
         if (booking.seatLockId) {
-          const lock = await SeatLock.findById(booking.seatLockId).session(
-            session,
-          );
+          const lock = await SeatLock.findById(booking.seatLockId).session(session);
 
           if (lock && lock.status === "ACTIVE") {
-            // 5a️⃣ Mark lock as EXPIRED
             lock.status = "EXPIRED";
             await lock.save({ session });
 
-            // 5b️⃣ Restore seats to the event (with constraint check)
-            const event = await Event.findById(lock.eventId).session(session);
-            if (event) {
-              const newAvailableSeats = Math.min(
-                event.availableSeats + lock.seats,
-                event.totalSeats,
-              );
-              event.availableSeats = newAvailableSeats;
-              await event.save({ session });
-              console.log(
-                `[BOOKING EXPIRY JOB] Expired booking ${booking._id}, expired lock ${lock._id}. New available: ${newAvailableSeats}/${event.totalSeats}`,
-              );
+            // ── Restore seats by passType ────────────────────────────────
+            if (lock.passType === "regular") {
+              await restoreSeats(lock.eventId, lock.seats, session);
+            } else if (lock.passType === "daily") {
+              const dateKey = lock.selectedDate ? toDateKey(lock.selectedDate) : null;
+              if (dateKey) {
+                await restoreDailySeats(lock.eventId, dateKey, lock.seats, session);
+              } else {
+                console.warn(`[BOOKING EXPIRY JOB] daily lock ${lock._id} has no selectedDate`);
+              }
+            } else if (lock.passType === "season") {
+              await restoreSeasonSeats(lock.eventId, lock.seats, session);
             }
+
+            console.log(
+              `[BOOKING EXPIRY JOB] Expired booking ${booking._id}, lock ${lock._id} (passType: ${lock.passType})`,
+            );
           }
         }
 
         processed++;
-      } catch (error) {
+      } catch (err) {
         errors++;
-        console.error(
-          `[BOOKING EXPIRY JOB] Error processing booking ${booking._id}:`,
-          error.message,
-        );
+        console.error(`[BOOKING EXPIRY JOB] Error on booking ${booking._id}:`, err.message);
       }
     }
 
     await session.commitTransaction();
     session.endSession();
 
-    // Mark job as completed
-    jobExecution.status = "COMPLETED";
+    jobExecution.status      = "COMPLETED";
     jobExecution.completedAt = new Date();
-    jobExecution.results = {
-      processed,
-      errors,
-      details: `Processed ${processed} bookings, ${errors} errors`,
-    };
+    jobExecution.results     = { processed, errors, details: `${processed} expired, ${errors} errors` };
     await jobExecution.save();
 
-    console.log(
-      `[BOOKING EXPIRY JOB] Successfully expired ${processed} bookings, ${errors} errors`,
-    );
+    console.log(`[BOOKING EXPIRY JOB] Done – ${processed} expired, ${errors} error(s)`);
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
 
-    // Mark job as failed
-    jobExecution.status = "FAILED";
+    jobExecution.status      = "FAILED";
     jobExecution.completedAt = new Date();
-    jobExecution.results = {
-      processed: 0,
-      errors: 1,
-      details: error.message,
-    };
+    jobExecution.results     = { processed: 0, errors: 1, details: error.message };
     await jobExecution.save();
 
-    console.error("[BOOKING EXPIRY JOB ERROR]", error.message);
+    console.error("[BOOKING EXPIRY JOB] Fatal error:", error.message);
   }
 }
 
-// Only run interval in non-serverless (traditional server) environment
 if (process.env.VERCEL !== "1") {
   setInterval(expireBookings, BOOKING_EXPIRY_INTERVAL_MINUTES * 60 * 1000);
 }

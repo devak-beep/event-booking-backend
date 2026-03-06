@@ -1,176 +1,232 @@
-const mongoose = require("mongoose");
-const SeatLock = require("../models/SeatLock.model");
-const Event = require("../models/Event.model");
+// ============================================
+// LOCK CONTROLLER - Seat locking for single & multi-day events
+// ============================================
 
-// GET all locks or filter by eventId, userId, or status
-exports.getAllLocks = async (req, res) => {
-  try {
-    const { eventId, userId, status } = req.query;
+const mongoose    = require("mongoose");
+const SeatLock    = require("../models/SeatLock.model");
+const Event       = require("../models/Event.model");
+const Booking     = require("../models/Booking.model");
+const {
+  deductSeats,
+  deductDailySeats,
+  deductSeasonSeats,
+  restoreSeats,
+  restoreDailySeats,
+  restoreSeasonSeats,
+  isSeasonPassAvailable,
+  toDateKey,
+} = require("../utils/seatManager");
 
-    // Build filter based on query parameters
-    const filter = {};
-    if (eventId) filter.eventId = eventId;
-    if (userId) filter.userId = userId;
-    if (status) filter.status = status;
-
-    const locks = await SeatLock.find(filter)
-      .populate("eventId", "name totalSeats availableSeats")
-      .populate("userId", "name email");
-
-    res.status(200).json({
-      success: true,
-      data: locks,
-      count: locks.length,
-      filter: Object.keys(filter).length > 0 ? filter : null,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Error fetching locks",
-      error: error.message,
-    });
-  }
-};
-
-exports.lockSeats = async (req, res) => {
-  console.log("REQ BODY 👉", req.body);
-
-  const { eventId } = req.params;
-  const { userId, seats, idempotencyKey } = req.body;
-
-  if (!eventId || !userId || !seats || !idempotencyKey) {
-    return res.status(400).json({
-      success: false,
-      message: "Missing fields",
-    });
-  }
-
-  const existingLock = await SeatLock.findOne({ idempotencyKey });
-  if (existingLock) {
-    return res.status(200).json({ 
-      success: true, 
-      lockId: existingLock._id,
-      expiresAt: existingLock.expiresAt,
-      data: existingLock 
-    });
-  }
-
+// ─── POST /api/locks ─────────────────────────────────────────────────────────
+/**
+ * Lock seats before payment.
+ *
+ * Body for single-day event:
+ *   { userId, eventId, seats, passType: "regular", idempotencyKey }
+ *
+ * Body for multi-day – daily pass:
+ *   { userId, eventId, seats, passType: "daily", selectedDate: "YYYY-MM-DD", idempotencyKey }
+ *
+ * Body for multi-day – season pass:
+ *   { userId, eventId, seats, passType: "season", idempotencyKey }
+ */
+async function lockSeats(req, res) {
   const session = await mongoose.startSession();
   session.startTransaction();
-
   try {
-    const event = await Event.findOneAndUpdate(
-      { _id: eventId, availableSeats: { $gte: seats } },
-      { $inc: { availableSeats: -seats } },
-      { new: true, session },
-    );
+    const { userId, seats, passType = "regular", selectedDate, idempotencyKey } = req.body;
+    // eventId can come from URL params (POST /events/:eventId/lock) OR request body
+    const eventId = req.params.eventId || req.body.eventId;
 
-    if (!event) {
-      throw new Error("Not enough seats available");
+    // ── Validate required fields ──────────────────────────────────────────
+    if (!userId || !eventId || !seats) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: "userId, eventId and seats are required" });
     }
 
-    const lock = await SeatLock.create(
-      [
-        {
-          eventId,
-          userId,
-          seats,
-          idempotencyKey,
-          status: "ACTIVE",
-          expiresAt: new Date(Date.now() + 5 * 60 * 1000),
-        },
-      ],
-      { session },
-    );
+    // ── Idempotency check ─────────────────────────────────────────────────
+    if (idempotencyKey) {
+      const existing = await SeatLock.findOne({ idempotencyKey }).session(session);
+      if (existing) {
+        await session.commitTransaction();
+        session.endSession();
+        return res.status(200).json({ success: true, lock: existing, isRetry: true });
+      }
+    }
+
+    // ── Load event ────────────────────────────────────────────────────────
+    const event = await Event.findById(eventId).session(session);
+    if (!event) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ success: false, message: "Event not found" });
+    }
+
+    if (event.status !== "published") {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: "Event is not available for booking" });
+    }
+
+    // ── Determine effective passType ──────────────────────────────────────
+    const isMultiDay = event.eventType === "multi-day";
+    const effectivePassType = isMultiDay ? passType : "regular";
+
+    // ── Seat deduction by pass type ───────────────────────────────────────
+    let seatDeductResult;
+
+    if (effectivePassType === "regular") {
+      // ── Single-day event ────────────────────────────────────────────────
+      seatDeductResult = await deductSeats(eventId, seats, session);
+      if (!seatDeductResult.success) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(409).json({ success: false, message: "Not enough seats available" });
+      }
+
+    } else if (effectivePassType === "daily") {
+      // ── Multi-day daily pass ────────────────────────────────────────────
+      if (!selectedDate) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ success: false, message: "selectedDate is required for daily pass" });
+      }
+      if (!event.passOptions?.dailyPass?.enabled) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ success: false, message: "Daily pass is not available for this event" });
+      }
+
+      const dateKey = toDateKey(selectedDate);
+      // Validate the date is within the event's date range
+      const eventStart = toDateKey(event.eventDate);
+      const eventEnd   = toDateKey(event.endDate);
+      if (dateKey < eventStart || dateKey > eventEnd) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ success: false, message: `Selected date ${dateKey} is outside event dates (${eventStart} – ${eventEnd})` });
+      }
+
+      seatDeductResult = await deductDailySeats(eventId, dateKey, seats, session);
+      if (!seatDeductResult.success) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(409).json({ success: false, message: `Not enough daily seats available for ${dateKey}` });
+      }
+
+    } else if (effectivePassType === "season") {
+      // ── Multi-day season pass ───────────────────────────────────────────
+      if (!event.passOptions?.seasonPass?.enabled) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ success: false, message: "Season pass is not available for this event" });
+      }
+
+      seatDeductResult = await deductSeasonSeats(eventId, seats, session);
+      if (!seatDeductResult.success) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(409).json({
+          success: false,
+          message: seatDeductResult.reason || "Not enough seats for season pass (some days are sold out)",
+        });
+      }
+
+    } else {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: `Unknown passType: ${effectivePassType}` });
+    }
+
+    // ── Build lock data ───────────────────────────────────────────────────
+    const lockData = {
+      userId,
+      eventId,
+      seats,
+      passType: effectivePassType,
+      status:   "ACTIVE",
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 min TTL
+      ...(idempotencyKey && { idempotencyKey }),
+    };
+
+    // Store selectedDate for daily pass (as midnight UTC of that day)
+    if (effectivePassType === "daily" && selectedDate) {
+      lockData.selectedDate = new Date(`${toDateKey(selectedDate)}T00:00:00.000Z`);
+    }
+
+    const [lock] = await SeatLock.create([lockData], { session });
 
     await session.commitTransaction();
     session.endSession();
 
-    res.status(201).json({ 
-      success: true, 
-      lockId: lock[0]._id,
-      expiresAt: lock[0].expiresAt,
-      data: lock[0]
-    });
-  } catch (error) {
+    return res.status(201).json({ success: true, lock });
+  } catch (err) {
     await session.abortTransaction();
     session.endSession();
-
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
+    console.error("[LOCK CONTROLLER] lockSeats error:", err);
+    return res.status(500).json({ success: false, message: "Internal server error", error: err.message });
   }
-};
+}
 
-// Cancel a lock and restore seats
-exports.cancelLock = async (req, res) => {
-  const { lockId } = req.params;
+// ─── GET /api/locks ──────────────────────────────────────────────────────────
+async function getAllLocks(req, res) {
+  try {
+    const locks = await SeatLock.find().populate("eventId", "name eventDate").sort({ createdAt: -1 });
+    return res.status(200).json({ success: true, locks });
+  } catch (err) {
+    console.error("[LOCK CONTROLLER] getAllLocks error:", err);
+    return res.status(500).json({ success: false, message: "Internal server error", error: err.message });
+  }
+}
 
+// ─── POST /api/locks/:id/cancel ──────────────────────────────────────────────
+async function cancelLock(req, res) {
   const session = await mongoose.startSession();
   session.startTransaction();
-
   try {
-    const lock = await SeatLock.findById(lockId).session(session);
+    const { id } = req.params;
 
+    const lock = await SeatLock.findById(id).session(session);
     if (!lock) {
       await session.abortTransaction();
       session.endSession();
-      // Return success for idempotency - lock doesn't exist, nothing to cancel
-      return res.status(200).json({
-        success: true,
-        message: "Lock not found (already processed)",
-        alreadyProcessed: true,
-      });
+      return res.status(404).json({ success: false, message: "Lock not found" });
     }
 
-    // BUGFIX: If lock is not ACTIVE, return success (idempotent)
-    // This prevents double seat restoration
     if (lock.status !== "ACTIVE") {
       await session.abortTransaction();
       session.endSession();
-      console.log(
-        `[CANCEL LOCK] Lock ${lockId} is ${lock.status}, skipping (idempotent)`,
-      );
-      return res.status(200).json({
-        success: true,
-        message: `Lock already ${lock.status} (idempotent)`,
-        alreadyProcessed: true,
-        lockStatus: lock.status,
-      });
+      return res.status(400).json({ success: false, message: `Lock is already ${lock.status}` });
     }
 
-    // Restore seats atomically with constraint check
-    const event = await Event.findById(lock.eventId).session(session);
-    if (event) {
-      // Use constraint to prevent availableSeats > totalSeats
-      const newAvailableSeats = Math.min(
-        event.availableSeats + lock.seats,
-        event.totalSeats,
-      );
-      event.availableSeats = newAvailableSeats;
-      await event.save({ session });
-      console.log(
-        `[CANCEL LOCK] Restored ${lock.seats} seats for event ${lock.eventId}. New available: ${newAvailableSeats}`,
-      );
+    // ── Restore seats based on passType ───────────────────────────────────
+    if (lock.passType === "regular") {
+      await restoreSeats(lock.eventId, lock.seats, session);
+    } else if (lock.passType === "daily") {
+      const dateKey = lock.selectedDate ? toDateKey(lock.selectedDate) : null;
+      if (dateKey) {
+        await restoreDailySeats(lock.eventId, dateKey, lock.seats, session);
+      } else {
+        console.warn(`[LOCK CONTROLLER] cancelLock: daily lock ${id} has no selectedDate`);
+      }
+    } else if (lock.passType === "season") {
+      await restoreSeasonSeats(lock.eventId, lock.seats, session);
     }
 
-    // Mark lock as cancelled
     lock.status = "CANCELLED";
     await lock.save({ session });
 
     await session.commitTransaction();
     session.endSession();
 
-    res.status(200).json({ success: true, message: "Lock cancelled" });
-  } catch (error) {
+    return res.status(200).json({ success: true, message: "Lock cancelled and seats restored", lock });
+  } catch (err) {
     await session.abortTransaction();
     session.endSession();
-    console.error("[CANCEL LOCK] Error:", error.message);
-
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
+    console.error("[LOCK CONTROLLER] cancelLock error:", err);
+    return res.status(500).json({ success: false, message: "Internal server error", error: err.message });
   }
-};
+}
+
+module.exports = { lockSeats, getAllLocks, cancelLock };

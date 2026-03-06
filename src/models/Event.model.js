@@ -21,10 +21,72 @@ const eventSchema = new mongoose.Schema(
     },
 
     // FIELD: When the event happens (date and time)
+    // For single-day events, this is the event date
+    // For multi-day events, this is the start date
     eventDate: {
       type: Date,
       required: true, // Event date is mandatory
       index: true, // Create database index for faster searches
+    },
+
+    // FIELD: Event duration type
+    eventType: {
+      type: String,
+      enum: ["single-day", "multi-day"],
+      default: "single-day",
+      required: true,
+    },
+
+    // FIELD: End date for multi-day events
+    endDate: {
+      type: Date,
+      required: function () {
+        return this.eventType === "multi-day";
+      },
+      validate: {
+        validator: function (value) {
+          if (this.eventType === "multi-day") {
+            return value && value >= this.eventDate;
+          }
+          return true;
+        },
+        message: "End date must be after or equal to start date",
+      },
+    },
+
+    // FIELD: Pass options for multi-day events
+    passOptions: {
+      dailyPass: {
+        enabled: {
+          type: Boolean,
+          default: false,
+        },
+        price: {
+          type: Number,
+          min: 0,
+        },
+      },
+      seasonPass: {
+        enabled: {
+          type: Boolean,
+          default: false,
+        },
+        price: {
+          type: Number,
+          min: 0,
+        },
+      },
+    },
+
+    // FIELD: Per-day seat availability for multi-day events
+    // Structure: { "2026-03-06": { total: 10, available: 8 }, "2026-03-07": { total: 10, available: 10 } }
+    dailySeats: {
+      type: Map,
+      of: {
+        total: { type: Number, min: 0 },
+        available: { type: Number, min: 0 },
+      },
+      default: {},
     },
 
     // FIELD: Total number of seats available for this event
