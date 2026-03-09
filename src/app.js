@@ -37,9 +37,11 @@ app.use(
 
       const allowed = [
         /^http:\/\/localhost:\d+$/, // any localhost port
+        /^https:\/\/digifulx-asset-track-front[^.]*\.vercel\.app$/, // all digifulx frontend deployments
         /^https:\/\/eventix-frontend[^.]*\.vercel\.app$/, // all eventix-frontend-*.vercel.app
         /^https:\/\/eventix[^.]*\.vercel\.app$/, // any eventix*.vercel.app variant
         "https://eventix-frontend-8v2j.vercel.app", // explicit production frontend
+        "https://digifulx-asset-track-front-epszkf6qd.vercel.app", // digifulx frontend
       ];
 
       const isAllowed = allowed.some((pattern) =>
