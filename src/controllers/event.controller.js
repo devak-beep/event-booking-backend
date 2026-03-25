@@ -158,19 +158,75 @@ exports.createEvent = async (req, res) => {
 };
 
 /**
- * Get all public events (or all events for admin)
+ * Get all public events (or all events for admin) - EXCLUDES expired events
  */
 exports.getAllPublicEvents = async (req, res) => {
   const { userRole } = req.query;
+  const now = new Date();
 
-  // Admin and superAdmin see all events (public + private), users see only public
-  const filter =
+  // Build base filter: exclude expired events for everyone on the main listing
+  // An event is expired if:
+  //   - single-day: eventDate <= now
+  //   - multi-day: endDate <= now (or eventDate <= now if no endDate)
+  const notExpiredFilter = {
+    $or: [
+      // multi-day events where endDate is in the future
+      { eventType: "multi-day", endDate: { $gt: now } },
+      // single-day events where eventDate is in the future
+      { eventType: { $ne: "multi-day" }, eventDate: { $gt: now } },
+      // multi-day events with no endDate — fall back to eventDate
+      { eventType: "multi-day", endDate: null, eventDate: { $gt: now } },
+    ],
+  };
+
+  // Admin and superAdmin see all (public + private) non-expired events
+  // Users see only public non-expired events
+  const typeFilter =
     userRole === "admin" || userRole === "superAdmin" ? {} : { type: "public" };
+
+  const filter = { ...typeFilter, ...notExpiredFilter };
 
   const events = await Event.find(filter)
     .populate("createdBy", "name email")
     .populate("approvedBy", "name email")
-    .sort({ eventDate: 1 }); // Sort by event date (earliest first)
+    .sort({ eventDate: 1 });
+
+  res.status(200).json({
+    success: true,
+    data: events,
+  });
+};
+
+/**
+ * Get expired events (admin/superAdmin only)
+ */
+exports.getExpiredEvents = async (req, res) => {
+  const { userRole } = req.query;
+
+  if (userRole !== "admin" && userRole !== "superAdmin") {
+    return res.status(403).json({
+      success: false,
+      message: "Only admins can view expired events",
+    });
+  }
+
+  const now = new Date();
+
+  const expiredFilter = {
+    $or: [
+      // multi-day events where endDate has passed
+      { eventType: "multi-day", endDate: { $lte: now } },
+      // single-day events where eventDate has passed
+      { eventType: { $ne: "multi-day" }, eventDate: { $lte: now } },
+      // multi-day with no endDate — fall back to eventDate
+      { eventType: "multi-day", endDate: null, eventDate: { $lte: now } },
+    ],
+  };
+
+  const events = await Event.find(expiredFilter)
+    .populate("createdBy", "name email")
+    .populate("approvedBy", "name email")
+    .sort({ eventDate: -1 }); // Most recently expired first
 
   res.status(200).json({
     success: true,

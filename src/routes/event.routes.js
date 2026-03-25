@@ -12,6 +12,7 @@ const {
   createEvent,
   getEventById,
   getAllPublicEvents,
+  getExpiredEvents,
   getMyEvents,
   updateEventImage,
   updateEventDetails,
@@ -40,7 +41,7 @@ router.post("/", requireAdmin, createEvent);
 router.post("/sync-all", syncAllEvents);
 
 // ROUTE 2: GET /api/events
-// Purpose: Get all public events
+// Purpose: Get all public non-expired events
 // Handler: getAllPublicEvents function
 // Response: {success: true, data: [events]}
 router.get("/", getAllPublicEvents);
@@ -51,6 +52,13 @@ router.get("/", getAllPublicEvents);
 // Query param: userId
 // Response: {success: true, data: [events]}
 router.get("/my-events", getMyEvents);
+
+// ROUTE 2.6: GET /api/events/expired
+// Purpose: Get expired events (admin/superAdmin only)
+// Handler: getExpiredEvents function
+// Query param: userRole
+// Response: {success: true, data: [events]}
+router.get("/expired", getExpiredEvents);
 
 // ROUTE 3: GET /api/events/:id
 // Purpose: Get event details by ID
