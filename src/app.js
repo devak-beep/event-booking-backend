@@ -17,6 +17,7 @@ require("express-async-errors");
 const correlationMiddleware = require("./middlewares/correlation.middleware");
 const errorMiddleware = require("./middlewares/error.middleware");
 const connectDB = require("./config/db");
+const { logger } = require("./utils/logger");
 
 // Import all route files
 const userRoutes = require("./routes/user.routes"); // User registration/retrieval routes
@@ -39,7 +40,7 @@ app.use(
         /^http:\/\/localhost:\d+$/, // any localhost port
         /^https:\/\/eventix-frontend[^.]*\.vercel\.app$/, // all eventix-frontend-*.vercel.app
         /^https:\/\/eventix[^.]*\.vercel\.app$/, // any eventix*.vercel.app variant
-        "https://eventix-frontend-8v2j.vercel.app", // explicit production frontend
+        process.env.FRONTEND_URL, // production frontend from .env
       ];
 
       const isAllowed = allowed.some((pattern) =>
@@ -48,7 +49,6 @@ app.use(
       if (isAllowed) {
         callback(null, true);
       } else {
-        console.log(`CORS blocked origin: ${origin}`);
         callback(new Error(`CORS: origin ${origin} not allowed`));
       }
     },
@@ -69,6 +69,21 @@ app.options("*", cors());
 
 // MIDDLEWARE: Correlation ID for request tracking
 app.use(correlationMiddleware);
+
+// MIDDLEWARE: HTTP request logging
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    logger.info({
+      method: req.method,
+      url: req.originalUrl,
+      status: res.statusCode,
+      ms: Date.now() - start,
+      correlationId: req.correlationId,
+    });
+  });
+  next();
+});
 
 // MIDDLEWARE: Enable JSON parsing
 // This allows the server to read JSON from request bodies
