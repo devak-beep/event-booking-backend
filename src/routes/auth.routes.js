@@ -38,6 +38,8 @@ passport.use(
   )
 );
 
+const FRONTEND = process.env.FRONTEND_URL || "https://eventix-v2.vercel.app";
+
 // Step 1: Redirect to Google
 router.get(
   "/google",
@@ -47,17 +49,16 @@ router.get(
 // Step 2: Google callback
 router.get(
   "/google/callback",
-  passport.authenticate("google", { session: false, failureRedirect: `${process.env.FRONTEND_URL}?error=google_auth_failed` }),
+  passport.authenticate("google", { session: false, failureRedirect: `${FRONTEND}?error=google_auth_failed` }),
   (req, res) => {
     const user = req.user;
-    // Pass user data to frontend via query params (simple, no JWT needed)
     const params = new URLSearchParams({
       _id: user._id.toString(),
       name: user.name,
       email: user.email,
       role: user.role,
     });
-    res.redirect(`${process.env.FRONTEND_URL}?googleAuth=${encodeURIComponent(params.toString())}`);
+    res.redirect(`${FRONTEND}?googleAuth=${encodeURIComponent(params.toString())}`);
   }
 );
 
