@@ -115,6 +115,9 @@ app.use(async (req, res, next) => {
 
 // REGISTER ROUTES: Mount route handlers at different API endpoints
 // Example: POST /api/users/register → handled by userRoutes
+const passport = require("passport");
+app.use(passport.initialize());
+app.use("/api/auth", require("./routes/auth.routes"));
 app.use("/api/users", userRoutes); // Routes: POST /register, GET /:id
 app.use("/api/events", eventRoutes); // Routes: POST /, GET /:id, POST /:eventId/lock
 app.use("/api/locks", lockRoutes); // Route: POST /
