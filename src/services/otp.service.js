@@ -67,7 +67,7 @@ function buildEmailHtml(otp, purpose) {
               <table cellpadding="0" cellspacing="0">
                 <tr>
                   <td align="center" valign="middle" style="padding-right:14px;">
-                    <img src="https://i.ibb.co/Md89Cmd/eventix-logo.png" alt="Eventix" width="56" height="56" style="display:block;border:0;border-radius:12px;" />
+                    <img src="https://eventix-v2.vercel.app/eventix-logo.png" alt="Eventix" width="56" height="56" style="display:block;border:0;border-radius:12px;" />
                   </td>
                   <td align="left" valign="middle">
                     <span style="font-size:32px;font-weight:900;color:#00d4ff;letter-spacing:1px;">Eventix</span>
